@@ -126,15 +126,16 @@ public class BlobParameterTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db)
     public void BindParameterWithoutTable()
     {
         var value = Faker.Random.Bytes(Faker.Random.Int(1, 100));
-        
+
         Command.CommandText = "SELECT ?;";
         Command.Parameters.Add(new DuckDBParameter(value));
-        
-        var result = Command.ExecuteScalar();
-        
-        using var stream = (Stream)result;
+
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+
+        using var stream = (Stream)reader.GetValue(0);
         var resultBytes = new byte[value.Length];
-        
+
         stream.Read(resultBytes, 0, resultBytes.Length);
 
         resultBytes.Should().BeEquivalentTo(value);
