@@ -763,6 +763,43 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
         count.Should().Be(5000);
     }
 
+    [Fact]
+    public void AppenderWithEnum()
+    {
+        Command.CommandText = "CREATE TYPE mood AS ENUM ('happy', 'sad', 'neutral');";
+        Command.ExecuteNonQuery();
+
+        Command.CommandText = "CREATE TABLE managedAppenderEnumChunkBoundary (id INTEGER, feeling mood);";
+        Command.ExecuteNonQuery();
+
+        var moods = new[] { "happy", "sad", "neutral" };
+
+        // Append more than 2048 rows (VectorSize) to trigger writer recreation across the chunk boundary
+        const int rows = 2049;
+        using (var appender = Connection.CreateAppender("managedAppenderEnumChunkBoundary"))
+        {
+            for (int i = 0; i < rows; i++)
+            {
+                appender.CreateRow()
+                    .AppendValue(i)
+                    .AppendValue(moods[i % moods.Length])
+                    .EndRow();
+            }
+        }
+
+        Command.CommandText = "SELECT id, feeling::VARCHAR FROM managedAppenderEnumChunkBoundary ORDER BY id";
+        using var reader = Command.ExecuteReader();
+
+        for (int i = 0; i < rows; i++)
+        {
+            reader.Read().Should().BeTrue();
+            reader.GetInt32(0).Should().Be(i);
+            reader.GetString(1).Should().Be(moods[i % moods.Length]);
+        }
+
+        reader.Read().Should().BeFalse();
+    }
+
     private static string GetCreateEnumTypeSql(string enumName, string enumValueNamePrefix, int count)
     {
         var stringBuilder = new StringBuilder();
