@@ -9,7 +9,7 @@ jobs:
     steps:
     
     - name: Download Artifacts
-      uses: dawidd6/action-download-artifact@v6
+      uses: dawidd6/action-download-artifact@v21
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         workflow: ci.yml
