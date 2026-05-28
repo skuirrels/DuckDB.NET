@@ -21,12 +21,13 @@ internal sealed unsafe class EnumVectorDataWriter(IntPtr vector, void* vectorDat
 
     internal override bool AppendEnum<TEnum>(TEnum value, ulong rowIndex)
     {
-        if (typeof(TEnum).IsDefined(typeof(FlagsAttribute), false))
+        var enumValueType = value.GetType();
+        if (enumValueType.IsDefined(typeof(FlagsAttribute), false))
         {
             throw new InvalidOperationException("Failed to write Enum column because [Flags] enums are not supported.");
         }
 
-        var enumName = Enum.GetName(value);
+        var enumName = Enum.GetName(enumValueType, value);
         if (enumName is not null)
         {
             EnsureEnumValuesInitialized();
