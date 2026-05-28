@@ -110,6 +110,6 @@ internal sealed class EnumVectorDataReader : VectorDataReaderBase
             return parsedEnum;
         }
 
-        return Enum.ToObject(targetType, enumValue);
+        throw new InvalidCastException($"Cannot convert DuckDB enum value \"{enumName}\" to {targetType.Name}.");
     }
 }

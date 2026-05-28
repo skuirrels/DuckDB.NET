@@ -13,7 +13,7 @@ internal sealed unsafe class EnumVectorDataWriter(IntPtr vector, void* vectorDat
         EnsureEnumValuesInitialized();
         if (enumValues.TryGetValue(value, out var enumValue))
         {
-            return AppendEnumValue(enumValue, rowIndex);
+            return AppendEnumDictionaryIndex(enumValue, rowIndex);
         }
 
         throw new InvalidOperationException($"Failed to write Enum column because the value \"{value}\" is not valid.");
@@ -33,21 +33,21 @@ internal sealed unsafe class EnumVectorDataWriter(IntPtr vector, void* vectorDat
             EnsureEnumValuesInitialized();
             if (enumValues.TryGetValue(enumName, out var enumValue))
             {
-                return AppendEnumValue(enumValue, rowIndex);
+                return AppendEnumDictionaryIndex(enumValue, rowIndex);
             }
         }
 
         throw new InvalidOperationException($"Failed to write Enum column because the value \"{value}\" is not valid.");
     }
 
-    private bool AppendEnumValue(ulong enumValue, ulong rowIndex)
+    private bool AppendEnumDictionaryIndex(ulong dictionaryIndex, ulong rowIndex)
     {
         // The following casts to byte and ushort are safe because we ensure in the constructor that the enumDictionarySize is not too high.
         return enumType switch
         {
-            DuckDBType.UnsignedTinyInt => AppendValueInternal((byte)enumValue, rowIndex),
-            DuckDBType.UnsignedSmallInt => AppendValueInternal((ushort)enumValue, rowIndex),
-            DuckDBType.UnsignedInteger => AppendValueInternal((uint)enumValue, rowIndex),
+            DuckDBType.UnsignedTinyInt => AppendValueInternal((byte)dictionaryIndex, rowIndex),
+            DuckDBType.UnsignedSmallInt => AppendValueInternal((ushort)dictionaryIndex, rowIndex),
+            DuckDBType.UnsignedInteger => AppendValueInternal((uint)dictionaryIndex, rowIndex),
             _ => throw new InvalidOperationException("Failed to write Enum column because the internal enum type must be utinyint, usmallint, or uinteger."),
         };
     }
