@@ -38,18 +38,18 @@ public class DuckDBDataReader : DbDataReader
 
     private bool InitNextReader()
     {
-        foreach (var reader in vectorReaders)
-        {
-            reader?.Dispose();
-        }
-
-        vectorReaders = [];
-
         while (resultEnumerator.MoveNext())
         {
             var result = resultEnumerator.Current;
             if (NativeMethods.Query.DuckDBResultReturnType(result) == DuckDBResultType.QueryResult)
             {
+                foreach (var reader in vectorReaders)
+                {
+                    reader?.Dispose();
+                }
+
+                vectorReaders = [];
+
                 currentChunkIndex = 0;
                 currentResult = result;
 
