@@ -471,7 +471,7 @@ public class DuckDBDataReaderTestAllTypes : DuckDBTestBase
     [Fact]
     public void ReadStructOfArray()
     {
-        var columnIndex = 43;
+        var columnIndex = 44;
         reader.GetOrdinal("struct_of_arrays").Should().Be(columnIndex);
 
         reader.GetFieldValue<StructOfArrayTest>(columnIndex).Should().BeEquivalentTo(new StructOfArrayTest());
@@ -493,7 +493,7 @@ public class DuckDBDataReaderTestAllTypes : DuckDBTestBase
     [Fact]
     public void ReadArrayOfStructs()
     {
-        var columnIndex = 44;
+        var columnIndex = 45;
         reader.GetOrdinal("array_of_structs").Should().Be(columnIndex);
 
         reader.GetFieldValue<List<StructTest>>(columnIndex).Should().BeEquivalentTo(new List<StructTest>());
@@ -520,7 +520,7 @@ public class DuckDBDataReaderTestAllTypes : DuckDBTestBase
     [Fact]
     public void ReadMap()
     {
-        var columnIndex = 45;
+        var columnIndex = 46;
         reader.GetOrdinal("map").Should().Be(columnIndex);
 
         reader.GetValue(columnIndex).Should().BeEquivalentTo(new Dictionary<string, string>());
@@ -540,19 +540,19 @@ public class DuckDBDataReaderTestAllTypes : DuckDBTestBase
     [Fact]
     public void ReadFixedIntArray()
     {
-        VerifyDataList("fixed_int_array", 47, new List<List<int?>> { new() { null, 2, 3 }, new() { 4, 5, 6 }, new() { 42, 999, null, null, -42 } });
+        VerifyDataList("fixed_int_array", 48, new List<List<int?>> { new() { null, 2, 3 }, new() { 4, 5, 6 }, new() { 42, 999, null, null, -42 } });
     }
 
     [Fact]
     public void ReadFixedVarcharArray()
     {
-        VerifyDataListClass("fixed_varchar_array", 48, new List<List<string>> { new() { "a", null, "c" }, new() { "d", "e", "f" } });
+        VerifyDataListClass("fixed_varchar_array", 49, new List<List<string>> { new() { "a", null, "c" }, new() { "d", "e", "f" } });
     }
 
     [Fact]
     public void ReadFixedNestedIntArray()
     {
-        VerifyDataListClass("fixed_nested_int_array", 49, new List<List<List<int?>>>
+        VerifyDataListClass("fixed_nested_int_array", 50, new List<List<List<int?>>>
         {
             new ()
             {
@@ -572,7 +572,7 @@ public class DuckDBDataReaderTestAllTypes : DuckDBTestBase
     [Fact]
     public void ReadFixedNestedVarcharArray()
     {
-        VerifyDataListClass("fixed_nested_varchar_array", 50, new List<List<List<string>>>
+        VerifyDataListClass("fixed_nested_varchar_array", 51, new List<List<List<string>>>
         {
             new ()
             {
@@ -592,7 +592,7 @@ public class DuckDBDataReaderTestAllTypes : DuckDBTestBase
     [Fact]
     public void ReadFixedStructArray()
     {
-        var columnIndex = 51;
+        var columnIndex = 52;
         reader.GetOrdinal("fixed_struct_array").Should().Be(columnIndex);
 
         reader.GetFieldValue<List<StructTest>>(columnIndex).Should().BeEquivalentTo(new List<StructTest>()
@@ -632,7 +632,7 @@ public class DuckDBDataReaderTestAllTypes : DuckDBTestBase
     [Fact]
     public void ReadStructOfFixedArray()
     {
-        var columnIndex = 52;
+        var columnIndex = 53;
         reader.GetOrdinal("struct_of_fixed_array").Should().Be(columnIndex);
 
         reader.GetFieldValue<StructOfArrayTest>(columnIndex).Should().BeEquivalentTo(new StructOfArrayTest()
@@ -658,7 +658,7 @@ public class DuckDBDataReaderTestAllTypes : DuckDBTestBase
     [Fact]
     public void ReadFixedArrayIntList()
     {
-        VerifyDataListClass("fixed_array_of_int_list", 53, new List<List<List<int?>>>
+        VerifyDataListClass("fixed_array_of_int_list", 54, new List<List<List<int?>>>
         {
             new ()
             {
@@ -678,7 +678,7 @@ public class DuckDBDataReaderTestAllTypes : DuckDBTestBase
     [Fact]
     public void ReadListFixedIntArray()
     {
-        VerifyDataListClass("list_of_fixed_int_array", 54, new List<List<List<int?>>>
+        VerifyDataListClass("list_of_fixed_int_array", 55, new List<List<List<int?>>>
         {
             new ()
             {
