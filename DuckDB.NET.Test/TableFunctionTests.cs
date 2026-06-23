@@ -1,4 +1,5 @@
 ﻿using System.Globalization;
+using System.Text.Json;
 using System.Threading;
 
 namespace DuckDB.NET.Test;
@@ -386,5 +387,540 @@ public class TableFunctionTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db)
         var data = Connection.Query<string>("SELECT * FROM demo_timetz('10:30:45+02:00'::TIMETZ);").ToList();
 
         data.Should().BeEquivalentTo("success");
+    }
+
+    [Fact]
+    public void TableFunctionBindError_PreservesInnerException()
+    {
+        var originalException = new InvalidOperationException("custom bind error");
+
+        Connection.RegisterTableFunction<string>("bind_inner_err", _ => throw originalException, (_, _, _) => { });
+
+        var act = () => Connection.Query<int>("SELECT * FROM bind_inner_err('')");
+        var ex = act.Should().Throw<DuckDBException>().Which;
+
+        ex.Message.Should().Contain("custom bind error");
+        ex.InnerException.Should().BeOfType<InvalidOperationException>();
+        ex.InnerException!.Message.Should().Be("custom bind error");
+        ex.InnerException.Should().BeSameAs(originalException);
+    }
+
+    [Fact]
+    public void TableFunctionMapError_PreservesInnerException()
+    {
+        var originalException = new NotSupportedException("custom map error");
+
+        Connection.RegisterTableFunction<string>("map_inner_err", _ =>
+        {
+            return new TableFunction([new ColumnInfo("col1", typeof(string))], new[] { "a" });
+        }, (_, _, _) => throw originalException);
+
+        var act = () => Connection.Query<int>("SELECT * FROM map_inner_err('')");
+        var ex = act.Should().Throw<DuckDBException>().Which;
+
+        ex.Message.Should().Contain("custom map error");
+        ex.InnerException.Should().BeOfType<NotSupportedException>();
+        ex.InnerException!.Message.Should().Be("custom map error");
+        ex.InnerException.Should().BeSameAs(originalException);
+    }
+
+    [Theory]
+    [InlineData(100, false, "card_estimated")]
+    [InlineData(50, true, "card_exact")]
+    public void RegisterTableFunctionWithCardinality(int count, bool isExact, string funcName)
+    {
+        var expectedData = Enumerable.Range(0, count).ToList();
+
+        Connection.RegisterTableFunction(funcName, parameters =>
+        {
+            return new TableFunction(new List<ColumnInfo>
+            {
+                new("value", typeof(int)),
+            }, expectedData, cardinality: new CardinalityHint((ulong)count, IsExact: isExact));
+        }, (item, writers, rowIndex) =>
+        {
+            writers[0].WriteValue((int)item, rowIndex);
+        });
+
+        var data = Connection.Query<int>($"SELECT * FROM {funcName}();").ToList();
+        data.Should().BeEquivalentTo(expectedData);
+    }
+
+    [Theory]
+    [InlineData(42, false, "plan_estimated")]
+    [InlineData(50, true, "plan_exact")]
+    public void RegisterTableFunctionWithCardinality_AppearsInQueryPlan(int cardinality, bool isExact, string funcName)
+    {
+        Connection.RegisterTableFunction(funcName, _ =>
+        {
+            return new TableFunction(new List<ColumnInfo>
+            {
+                new("value", typeof(int)),
+            }, Enumerable.Range(0, 50), cardinality: new CardinalityHint((ulong)cardinality, IsExact: isExact));
+        }, (item, writers, rowIndex) =>
+        {
+            writers[0].WriteValue((int)item, rowIndex);
+        });
+
+        var plan = Connection.Query<(string, string)>($"EXPLAIN (FORMAT JSON) SELECT * FROM {funcName}();").First();
+        var json = JsonDocument.Parse(plan.Item2);
+        var reported = json.RootElement[0]
+            .GetProperty("extra_info")
+            .GetProperty("Estimated Cardinality")
+            .GetString();
+
+        reported.Should().Be(cardinality.ToString());
+    }
+
+    [Fact]
+    public void RegisterTableFunctionWithListColumn()
+    {
+        var sourceData = new List<List<int>>
+        {
+            new() { 1, 2, 3 },
+            new() { 4, 5 },
+            new() { },
+            null,
+        };
+
+        Connection.RegisterTableFunction("list_func", () =>
+        {
+            return new TableFunction(new List<ColumnInfo>
+            {
+                new("numbers", typeof(List<int>)),
+            }, sourceData);
+        }, (item, writers, rowIndex) =>
+        {
+            writers[0].WriteValue((List<int>)item, rowIndex);
+        });
+
+        using var command = Connection.CreateCommand();
+        command.CommandText = "SELECT numbers FROM list_func();";
+        using var reader = command.ExecuteReader();
+
+        reader.Read();
+        reader.GetFieldValue<List<int>>(0).Should().BeEquivalentTo(new List<int> { 1, 2, 3 });
+
+        reader.Read();
+        reader.GetFieldValue<List<int>>(0).Should().BeEquivalentTo(new List<int> { 4, 5 });
+
+        reader.Read();
+        reader.GetFieldValue<List<int>>(0).Should().BeEquivalentTo(new List<int>());
+
+        reader.Read();
+        reader.IsDBNull(0).Should().BeTrue();
+
+        reader.Read().Should().BeFalse();
+    }
+
+    [Fact]
+    public void RegisterTableFunctionWithListColumn_ListHasAny()
+    {
+        var sourceData = new List<List<int>>
+        {
+            new() { 1, 2, 3 },
+            new() { 4, 5 },
+            new() { 6, 7, 8, 9 },
+            new() { },
+        };
+
+        Connection.RegisterTableFunction("list_func_has_any", () =>
+        {
+            return new TableFunction(new List<ColumnInfo>
+            {
+                new("numbers", typeof(List<int>)),
+            }, sourceData);
+        }, (item, writers, rowIndex) =>
+        {
+            writers[0].WriteValue((List<int>)item, rowIndex);
+        });
+
+        var data = Connection.Query<bool>("SELECT list_has_any(numbers, [3]) FROM list_func_has_any();").ToList();
+        data.Should().BeEquivalentTo([true, false, false, false]);
+    }
+
+    [Fact]
+    public void RegisterTableFunctionWithNestedListColumn()
+    {
+        var sourceData = new List<List<List<int?>>>
+        {
+            new() { new() { 1, 2 }, new() { 3, null, 5 } },
+            new() { new() { 10 }, null, new() { 20, 30 }, new() { 40 } },
+        };
+
+        Connection.RegisterTableFunction("list_func_nested", () =>
+        {
+            return new TableFunction(new List<ColumnInfo>
+            {
+                new("nested", typeof(List<List<int?>>)),
+            }, sourceData);
+        }, (item, writers, rowIndex) =>
+        {
+            writers[0].WriteValue((List<List<int?>>)item, rowIndex);
+        });
+
+        // flatten reduces one level of nesting
+        using var command = Connection.CreateCommand();
+        command.CommandText = "SELECT flatten(nested) FROM list_func_nested();";
+        using var reader = command.ExecuteReader();
+
+        reader.Read();
+        reader.GetFieldValue<List<int?>>(0).Should().BeEquivalentTo([1, 2, 3, (int?)null, 5],
+            options => options.WithStrictOrdering());
+
+        reader.Read();
+        reader.GetFieldValue<List<int?>>(0).Should().BeEquivalentTo([10, 20, 30, 40],
+            options => options.WithStrictOrdering());
+
+        reader.Read().Should().BeFalse();
+    }
+
+    private record Row(int Id, string Name, decimal Salary);
+
+    private static readonly List<Row> ProjectionRows =
+    [
+        new(1, "alice",   1000m),
+        new(2, "bob",     2000m),
+        new(3, "carol",   3000m),
+    ];
+
+    [Fact]
+    public void ProjectionPushdown_LegacyData_PrunedColumn()
+    {
+        Connection.RegisterTableFunction("pp_legacy_prune", () =>
+            new TableFunction(new List<ColumnInfo>
+            {
+                new("id", typeof(int)),
+                new("name", typeof(string)),
+                new("salary", typeof(decimal)),
+            }, ProjectionRows),
+        (item, writers, rowIndex) =>
+        {
+            var row = (Row)item!;
+            writers[0].WriteValue(row.Id, rowIndex);
+            writers[1].WriteValue(row.Name, rowIndex);
+            writers[2].WriteValue(row.Salary, rowIndex);
+        });
+
+        var names = Connection.Query<string>("SELECT name FROM pp_legacy_prune();").ToList();
+        names.Should().BeEquivalentTo(["alice", "bob", "carol"], o => o.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void ProjectionPushdown_LegacyData_Reordered()
+    {
+        Connection.RegisterTableFunction("pp_legacy_reorder", () =>
+            new TableFunction(new List<ColumnInfo>
+            {
+                new("id", typeof(int)),
+                new("name", typeof(string)),
+                new("salary", typeof(decimal)),
+            }, ProjectionRows),
+        (item, writers, rowIndex) =>
+        {
+            var row = (Row)item!;
+            writers[0].WriteValue(row.Id, rowIndex);
+            writers[1].WriteValue(row.Name, rowIndex);
+            writers[2].WriteValue(row.Salary, rowIndex);
+        });
+
+        using var command = Connection.CreateCommand();
+        command.CommandText = "SELECT salary, id FROM pp_legacy_reorder() ORDER BY id;";
+        using var reader = command.ExecuteReader();
+
+        reader.FieldCount.Should().Be(2);
+        reader.GetName(0).Should().Be("salary");
+        reader.GetName(1).Should().Be("id");
+
+        var results = new List<(decimal salary, int id)>();
+        while (reader.Read())
+        {
+            results.Add((reader.GetDecimal(0), reader.GetInt32(1)));
+        }
+
+        results.Should().BeEquivalentTo([
+            (1000m, 1), (2000m, 2), (3000m, 3)
+        ], o => o.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void ProjectionPushdown_LegacyData_CountStar()
+    {
+        Connection.RegisterTableFunction("pp_legacy_count", () =>
+            new TableFunction(new List<ColumnInfo>
+            {
+                new("id", typeof(int)),
+                new("name", typeof(string)),
+            }, ProjectionRows),
+        (item, writers, rowIndex) =>
+        {
+            var row = (Row)item!;
+            writers[0].WriteValue(row.Id, rowIndex);
+            writers[1].WriteValue(row.Name, rowIndex);
+        });
+
+        var count = Connection.Query<int>("SELECT COUNT(*) FROM pp_legacy_count();").Single();
+        count.Should().Be(3);
+    }
+
+    [Fact]
+    public void ProjectionPushdown_Factory_Identity()
+    {
+        IReadOnlyList<ProjectedColumn> captured = null;
+
+        Connection.RegisterTableFunction("pp_factory_identity", () =>
+            new TableFunction(new List<ColumnInfo>
+            {
+                new("id", typeof(int)),
+                new("name", typeof(string)),
+                new("salary", typeof(decimal)),
+            }, projected =>
+            {
+                captured = projected;
+                return ProjectionRows;
+            }),
+        (item, writers, rowIndex) =>
+        {
+            var row = (Row)item!;
+            writers[0].WriteValue(row.Id, rowIndex);
+            writers[1].WriteValue(row.Name, rowIndex);
+            writers[2].WriteValue(row.Salary, rowIndex);
+        });
+
+        var rows = Connection.Query<(int, string, decimal)>("SELECT * FROM pp_factory_identity() ORDER BY id;").ToList();
+        rows.Should().HaveCount(3);
+        rows[0].Should().Be((1, "alice", 1000m));
+
+        captured.Should().NotBeNull();
+        captured.Select(p => (p.Index, p.Name)).Should()
+            .BeEquivalentTo([(0, "id"), (1, "name"), (2, "salary")], o => o.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void ProjectionPushdown_Factory_Pruned()
+    {
+        IReadOnlyList<ProjectedColumn> captured = null;
+
+        Connection.RegisterTableFunction("pp_factory_prune", () =>
+            new TableFunction(new List<ColumnInfo>
+            {
+                new("id", typeof(int)),
+                new("name", typeof(string)),
+                new("salary", typeof(decimal)),
+            }, projected =>
+            {
+                captured = projected;
+                return ProjectionRows;
+            }),
+        (item, writers, rowIndex) =>
+        {
+            var row = (Row)item!;
+            writers[0].WriteValue(row.Id, rowIndex);
+            writers[1].WriteValue(row.Name, rowIndex);
+            writers[2].WriteValue(row.Salary, rowIndex);
+        });
+
+        var names = Connection.Query<string>("SELECT name FROM pp_factory_prune();").ToList();
+        names.Should().BeEquivalentTo(["alice", "bob", "carol"], o => o.WithStrictOrdering());
+
+        captured.Should().NotBeNull();
+        captured.Should().HaveCount(1);
+        captured[0].Index.Should().Be(1);
+        captured[0].Name.Should().Be("name");
+        captured[0].Type.Should().Be(typeof(string));
+    }
+
+    [Fact]
+    public void ProjectionPushdown_Factory_Reordered()
+    {
+        IReadOnlyList<ProjectedColumn> captured = null;
+
+        Connection.RegisterTableFunction("pp_factory_reorder", () =>
+            new TableFunction(new List<ColumnInfo>
+            {
+                new("id", typeof(int)),
+                new("name", typeof(string)),
+                new("salary", typeof(decimal)),
+            }, projected =>
+            {
+                captured = projected;
+                return ProjectionRows;
+            }),
+        (item, writers, rowIndex) =>
+        {
+            var row = (Row)item!;
+            writers[0].WriteValue(row.Id, rowIndex);
+            writers[1].WriteValue(row.Name, rowIndex);
+            writers[2].WriteValue(row.Salary, rowIndex);
+        });
+
+        using var command = Connection.CreateCommand();
+        command.CommandText = "SELECT salary, id FROM pp_factory_reorder() ORDER BY id;";
+        using var reader = command.ExecuteReader();
+
+        while (reader.Read()) { }
+
+        captured.Should().NotBeNull();
+        captured.Select(p => p.Index).Should().BeEquivalentTo([2, 0], o => o.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void ProjectionPushdown_Factory_CountStar()
+    {
+        IReadOnlyList<ProjectedColumn> captured = null;
+
+        Connection.RegisterTableFunction("pp_factory_count", () =>
+            new TableFunction(new List<ColumnInfo>
+            {
+                new("id", typeof(int)),
+                new("name", typeof(string)),
+            }, projected =>
+            {
+                captured = projected;
+                return ProjectionRows;
+            }),
+        (item, writers, rowIndex) =>
+        {
+            var row = (Row)item!;
+            writers[0].WriteValue(row.Id, rowIndex);
+            writers[1].WriteValue(row.Name, rowIndex);
+        });
+
+        var count = Connection.Query<int>("SELECT COUNT(*) FROM pp_factory_count();").Single();
+        count.Should().Be(3);
+
+        // DuckDB typically projects a single minimal column for COUNT(*); assert the factory saw a pruned subset.
+        captured.Should().NotBeNull();
+        captured.Count.Should().Be(1);
+    }
+
+    [Fact]
+    public void ProjectionPushdown_Factory_ThrowsInInit_PreservesInnerException()
+    {
+        var originalException = new InvalidOperationException("custom factory error");
+
+        Connection.RegisterTableFunction("pp_factory_throw", () =>
+            new TableFunction(new List<ColumnInfo>
+            {
+                new("id", typeof(int)),
+            }, _ => throw originalException),
+        (_, _, _) => { });
+
+        var act = () => Connection.Query<int>("SELECT id FROM pp_factory_throw();").ToList();
+        var ex = act.Should().Throw<DuckDBException>().Which;
+
+        ex.Message.Should().Contain("custom factory error");
+        ex.InnerException.Should().BeSameAs(originalException);
+    }
+
+    [Fact]
+    public void ProjectionPushdown_Probe_DuplicateSelection()
+    {
+        IReadOnlyList<ProjectedColumn> captured = null;
+
+        Connection.RegisterTableFunction("pp_probe_dup", () =>
+            new TableFunction(new List<ColumnInfo>
+            {
+                new("id", typeof(int)),
+                new("name", typeof(string)),
+                new("salary", typeof(decimal)),
+            }, projected =>
+            {
+                captured = projected;
+                return ProjectionRows;
+            }),
+        (item, writers, rowIndex) =>
+        {
+            var row = (Row)item!;
+            writers[0].WriteValue(row.Id, rowIndex);
+            writers[1].WriteValue(row.Name, rowIndex);
+            writers[2].WriteValue(row.Salary, rowIndex);
+        });
+
+        using var command = Connection.CreateCommand();
+        command.CommandText = "SELECT name, name, name FROM pp_probe_dup();";
+        using var reader = command.ExecuteReader();
+
+        reader.FieldCount.Should().Be(3);
+        var firstRow = new List<string>();
+        reader.Read();
+        firstRow.Add(reader.GetString(0));
+        firstRow.Add(reader.GetString(1));
+        firstRow.Add(reader.GetString(2));
+        firstRow.Should().AllBe("alice");
+
+        // DuckDB deduplicates the projection — the scan produces `name` once and
+        // a projection operator above the scan replicates it for each duplicate reference.
+        captured.Should().NotBeNull();
+        captured.Count.Should().Be(1);
+        captured.Select(p => p.Name).Should().Equal("name");
+    }
+
+    [Theory]
+    [InlineData("pp_probe_a", "SELECT * FROM pp_probe_a();",                        new[] { 0, 1, 2 })]
+    [InlineData("pp_probe_b", "SELECT id, name, salary FROM pp_probe_b();",         new[] { 0, 1, 2 })]
+    [InlineData("pp_probe_c", "SELECT salary, id, name FROM pp_probe_c();",         new[] { 2, 0, 1 })]
+    [InlineData("pp_probe_d", "SELECT name, id FROM pp_probe_d();",                 new[] { 1, 0 })]
+    [InlineData("pp_probe_e", "SELECT salary FROM pp_probe_e();",                   new[] { 2 })]
+    public void ProjectionPushdown_Probe_IndicesReflectSelectOrder(string funcName, string query, int[] expectedIndices)
+    {
+        IReadOnlyList<ProjectedColumn> captured = null;
+
+        Connection.RegisterTableFunction(funcName, () =>
+            new TableFunction(new List<ColumnInfo>
+            {
+                new("id", typeof(int)),
+                new("name", typeof(string)),
+                new("salary", typeof(decimal)),
+            }, projected =>
+            {
+                captured = projected;
+                return ProjectionRows;
+            }),
+        (item, writers, rowIndex) =>
+        {
+            var row = (Row)item!;
+            writers[0].WriteValue(row.Id, rowIndex);
+            writers[1].WriteValue(row.Name, rowIndex);
+            writers[2].WriteValue(row.Salary, rowIndex);
+        });
+
+        using var command = Connection.CreateCommand();
+        command.CommandText = query;
+        using var reader = command.ExecuteReader();
+        while (reader.Read()) { }
+
+        captured.Should().NotBeNull();
+        captured.Select(p => p.Index).Should().Equal(expectedIndices);
+    }
+
+    [Fact]
+    public void ProjectionPushdown_LegacyData_ListColumnPruned()
+    {
+        var callCount = 0;
+        var sourceData = new List<(int id, List<int> numbers)>
+        {
+            (1, [1, 2, 3]),
+            (2, [4, 5]),
+            (3, [6, 7, 8, 9]),
+        };
+
+        Connection.RegisterTableFunction("pp_list_prune", () =>
+            new TableFunction(new List<ColumnInfo>
+            {
+                new("id", typeof(int)),
+                new("numbers", typeof(List<int>)),
+            }, sourceData),
+        (item, writers, rowIndex) =>
+        {
+            callCount++;
+            var row = ((int id, List<int> numbers))item!;
+            writers[0].WriteValue(row.id, rowIndex);
+            writers[1].WriteValue(row.numbers, rowIndex);
+        });
+
+        var ids = Connection.Query<int>("SELECT id FROM pp_list_prune() ORDER BY id;").ToList();
+        ids.Should().BeEquivalentTo([1, 2, 3], o => o.WithStrictOrdering());
+        callCount.Should().Be(3);
     }
 }

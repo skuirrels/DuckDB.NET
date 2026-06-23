@@ -8,7 +8,31 @@ namespace DuckDB.NET.Data;
 
 public record ColumnInfo(string Name, Type Type);
 
-public record TableFunction(IReadOnlyList<ColumnInfo> Columns, IEnumerable Data);
+public record CardinalityHint(ulong Value, bool IsExact = false);
+
+public record ProjectedColumn(int Index, string Name, Type Type);
+
+public record TableFunction
+{
+    public IReadOnlyList<ColumnInfo> Columns { get; }
+    public CardinalityHint? Cardinality { get; }
+    internal IEnumerable? Data { get; }
+    internal Func<IReadOnlyList<ProjectedColumn>, IEnumerable>? DataFactory { get; }
+
+    public TableFunction(IReadOnlyList<ColumnInfo> columns, IEnumerable data, CardinalityHint? cardinality = null)
+    {
+        Columns = columns;
+        Data = data;
+        Cardinality = cardinality;
+    }
+
+    internal TableFunction(IReadOnlyList<ColumnInfo> columns, Func<IReadOnlyList<ProjectedColumn>, IEnumerable> dataFactory, CardinalityHint? cardinality = null)
+    {
+        Columns = columns;
+        DataFactory = dataFactory;
+        Cardinality = cardinality;
+    }
+}
 
 partial class DuckDBConnection
 {
@@ -92,6 +116,7 @@ partial class DuckDBConnection
         NativeMethods.TableFunction.DuckDBTableFunctionSetInit(function, &Init);
         NativeMethods.TableFunction.DuckDBTableFunctionSetFunction(function, &TableFunction);
         NativeMethods.TableFunction.DuckDBTableFunctionSetExtraInfo(function, tableFunctionInfo.ToHandle(), &DestroyExtraInfo);
+        NativeMethods.TableFunction.DuckDBTableFunctionSupportsProjectionPushdown(function, true);
 
         var state = NativeMethods.TableFunction.DuckDBRegisterTableFunction(NativeConnection, function);
 
@@ -142,12 +167,30 @@ partial class DuckDBConnection
                 NativeMethods.TableFunction.DuckDBBindAddResultColumn(info, columnInfo.Name, logicalType);
             }
 
-            var bindData = new TableFunctionBindData(tableFunctionData.Columns, tableFunctionData.Data.GetEnumerator());
+            if (tableFunctionData.Cardinality is { } cardinality)
+            {
+                NativeMethods.TableFunction.DuckDBBindSetCardinality(info, cardinality.Value, isExact: cardinality.IsExact);
+            }
+
+            var connectionId = UdfExceptionStore.GetTableFunctionBindConnectionId(info);
+            // ReSharper disable once GenericEnumeratorNotDisposed This is disposed in TableFunctionBindData.Dispose
+            var eagerEnumerator = tableFunctionData.Data?.GetEnumerator();
+            var bindData = new TableFunctionBindData(tableFunctionData.Columns, eagerEnumerator, tableFunctionData.DataFactory, connectionId);
 
             NativeMethods.TableFunction.DuckDBBindSetBindData(info, bindData.ToHandle(), &DestroyExtraInfo);
         }
         catch (Exception ex)
         {
+            try
+            {
+                var connectionId = UdfExceptionStore.GetTableFunctionBindConnectionId(info);
+                UdfExceptionStore.Store(connectionId, ex);
+            }
+            catch
+            {
+                // If we can't get the connection ID, we still report the error message
+            }
+
             NativeMethods.TableFunction.DuckDBBindSetError(info, ex.Message);
         }
         finally
@@ -165,17 +208,61 @@ partial class DuckDBConnection
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    private static void Init(IntPtr info) { }
+    private static unsafe void Init(IntPtr info)
+    {
+        TableFunctionBindData? bindData = null;
+        try
+        {
+            var bindHandle = GCHandle.FromIntPtr(NativeMethods.TableFunction.DuckDBInitGetBindData(info));
+            if (bindHandle.Target is not TableFunctionBindData data)
+            {
+                throw new InvalidOperationException("User defined table function init failed. Bind data is null");
+            }
+            bindData = data;
+
+            var count = (int)NativeMethods.TableFunction.DuckDBInitGetColumnCount(info);
+            var projected = new int[count];
+            for (var i = 0; i < count; i++)
+            {
+                projected[i] = (int)NativeMethods.TableFunction.DuckDBInitGetColumnIndex(info, (ulong)i);
+            }
+
+            IEnumerator? factoryEnumerator = null;
+            if (bindData.DataFactory is { } factory)
+            {
+                var projectedColumns = new ProjectedColumn[count];
+                for (var i = 0; i < count; i++)
+                {
+                    var column = bindData.Columns[projected[i]];
+                    projectedColumns[i] = new ProjectedColumn(projected[i], column.Name, column.Type);
+                }
+                // ReSharper disable once GenericEnumeratorNotDisposed This is disposed in TableFunctionInitData.Dispose
+                factoryEnumerator = factory(projectedColumns).GetEnumerator();
+            }
+
+            var initData = new TableFunctionInitData(projected, factoryEnumerator);
+            NativeMethods.TableFunction.DuckDBInitSetInitData(info, initData.ToHandle(), &DestroyExtraInfo);
+        }
+        catch (Exception ex)
+        {
+            if (bindData is not null)
+            {
+                UdfExceptionStore.Store(bindData.ConnectionId, ex);
+            }
+            NativeMethods.TableFunction.DuckDBInitSetError(info, ex.Message);
+        }
+    }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void TableFunction(IntPtr info, IntPtr chunk)
     {
-        VectorDataWriterBase[] writers = [];
+        IDuckDBDataWriter[] writers = [];
         DuckDBLogicalType[] logicalTypes = [];
         try
         {
             var bindData = GCHandle.FromIntPtr(NativeMethods.TableFunction.DuckDBFunctionGetBindData(info));
             var extraInfo = GCHandle.FromIntPtr(NativeMethods.TableFunction.DuckDBFunctionGetExtraInfo(info));
+            var initHandle = GCHandle.FromIntPtr(NativeMethods.TableFunction.DuckDBFunctionGetInitData(info));
 
             if (bindData.Target is not TableFunctionBindData tableFunctionBindData)
             {
@@ -187,27 +274,44 @@ partial class DuckDBConnection
                 throw new InvalidOperationException("User defined table function failed. Function extra info is null");
             }
 
+            if (initHandle.Target is not TableFunctionInitData tableFunctionInitData)
+            {
+                throw new InvalidOperationException("User defined table function failed. Function init data is null");
+            }
+
             var dataChunk = new DuckDBDataChunk(chunk);
 
-            writers = new VectorDataWriterBase[tableFunctionBindData.Columns.Count];
-            logicalTypes = new DuckDBLogicalType[tableFunctionBindData.Columns.Count];
+            var totalColumnCount = tableFunctionBindData.Columns.Count;
+            var projectedCount = tableFunctionInitData.Projected.Length;
 
-            for (var columnIndex = 0; columnIndex < tableFunctionBindData.Columns.Count; columnIndex++)
+            writers = new IDuckDBDataWriter[totalColumnCount];
+            Array.Fill(writers, NullDataWriter.Instance);
+
+            logicalTypes = new DuckDBLogicalType[projectedCount];
+
+            for (var columnIndex = 0; columnIndex < projectedCount; columnIndex++)
             {
-                var column = tableFunctionBindData.Columns[columnIndex];
+                var originalColumnIndex = tableFunctionInitData.Projected[columnIndex];
+                var column = tableFunctionBindData.Columns[originalColumnIndex];
                 var vector = NativeMethods.DataChunks.DuckDBDataChunkGetVector(dataChunk, columnIndex);
 
                 logicalTypes[columnIndex] = column.Type.GetLogicalType();
-                writers[columnIndex] = VectorDataWriterFactory.CreateWriter(vector, logicalTypes[columnIndex]);
+                writers[originalColumnIndex] = VectorDataWriterFactory.CreateWriter(vector, logicalTypes[columnIndex]);
+            }
+
+            var enumerator = tableFunctionInitData.FactoryEnumerator ?? tableFunctionBindData.DataEnumerator;
+            if (enumerator is null)
+            {
+                throw new InvalidOperationException("User defined table function failed. No data source available");
             }
 
             ulong size = 0;
 
             for (; size < DuckDBGlobalData.VectorSize; size++)
             {
-                if (tableFunctionBindData.DataEnumerator.MoveNext())
+                if (enumerator.MoveNext())
                 {
-                    tableFunctionInfo.Mapper(tableFunctionBindData.DataEnumerator.Current, writers, size);
+                    tableFunctionInfo.Mapper(enumerator.Current, writers, size);
                 }
                 else
                 {
@@ -219,13 +323,26 @@ partial class DuckDBConnection
         }
         catch (Exception ex)
         {
+            try
+            {
+                var bindData = GCHandle.FromIntPtr(NativeMethods.TableFunction.DuckDBFunctionGetBindData(info));
+                if (bindData.Target is TableFunctionBindData tableFunctionBindData)
+                {
+                    UdfExceptionStore.Store(tableFunctionBindData.ConnectionId, ex);
+                }
+            }
+            catch
+            {
+                // If we can't get the connection ID, we still report the error message
+            }
+
             NativeMethods.TableFunction.DuckDBFunctionSetError(info, ex.Message);
         }
         finally
         {
             foreach (var writer in writers)
             {
-                writer.Dispose();
+                (writer as IDisposable)?.Dispose();
             }
 
             foreach (var logicalType in logicalTypes)

@@ -1,4 +1,6 @@
 ﻿using System.IO;
+using System.Linq.Expressions;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 
 namespace DuckDB.NET.Data.DataChunk.Reader;
@@ -7,11 +9,9 @@ internal class VectorDataReaderBase : IDisposable, IDuckDBDataReader
 {
     private unsafe ulong* validityMaskPointer;
 
-    private Type? clrType;
-    public Type ClrType => clrType ??= GetColumnType();
+    public Type ClrType => field ??= GetColumnType();
 
-    private Type? providerSpecificClrType;
-    public Type ProviderSpecificClrType => providerSpecificClrType ??= GetColumnProviderSpecificType();
+    public Type ProviderSpecificClrType => field ??= GetColumnProviderSpecificType();
 
 
     public string ColumnName { get; }
@@ -45,28 +45,34 @@ internal class VectorDataReaderBase : IDisposable, IDuckDBDataReader
         return isValid;
     }
 
-    public virtual T GetValue<T>(ulong offset)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public T GetValue<T>(ulong offset) => GetValue<T>(offset, strict: false);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal T GetValueStrict<T>(ulong offset) => GetValue<T>(offset, strict: true);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal T GetValue<T>(ulong offset, bool strict)
     {
-        var (isNullableValueType, targetType) = TypeExtensions.IsNullableValueType<T>();
-
-        var isValid = IsValid(offset);
-
-        //If nullable we can't use Unsafe.As because we don't have the underlying type as T so use the non-generic GetValue method.
-        if (isNullableValueType)
+        // When T is Nullable<TUnderlying> (e.g. int?), we can't call GetValidValue<int>() directly
+        // because we only have T=int? at compile time. NullableHandler uses a pre-compiled expression
+        // tree that calls GetValidValue<int>() and converts to int?, avoiding boxing through the
+        // non-generic GetValue(offset, Type) path.
+        if (NullableHandler<T>.IsNullableValueType)
         {
-            return isValid
-                ? (T)GetValue(offset, Nullable.GetUnderlyingType(targetType)!)
-                : default!; //T is Nullable<> and we are returning null so suppress compiler warning.
+            return NullableHandler<T>.Read(this, offset);
         }
 
-        //If we are here, T isn't Nullable<>. It can be either a value type or a class.
-        //In both cases if the data is null we should throw.
-        if (isValid)
+        if (IsValid(offset))
         {
-            return GetValidValue<T>(offset, targetType);
+            return GetValidValue<T>(offset);
         }
-        
-        throw new InvalidCastException($"Column '{ColumnName}' value is null");
+
+        if (strict || !NullableHandler<T>.IsReferenceType)
+        {
+            throw new InvalidCastException($"Column '{ColumnName}' value is null");
+        }
+        return default!;
     }
 
     /// <summary>
@@ -74,15 +80,12 @@ internal class VectorDataReaderBase : IDisposable, IDuckDBDataReader
     /// </summary>
     /// <typeparam name="T">Type of the return value</typeparam>
     /// <param name="offset">Position to read the data from</param>
-    /// <param name="targetType">Type of the return value</param>
     /// <returns>Data at the specified offset</returns>
-    protected virtual T GetValidValue<T>(ulong offset, Type targetType)
-    {
-        return (T)GetValue(offset, targetType);
-    }
+    protected virtual T GetValidValue<T>(ulong offset) => (T)GetValue(offset, typeof(T));
 
     public object GetValue(ulong offset)
     {
+        if (!IsValid(offset)) return null!;
         return GetValue(offset, ClrType);
     }
 
@@ -95,10 +98,7 @@ internal class VectorDataReaderBase : IDisposable, IDuckDBDataReader
         };
     }
 
-    internal object GetProviderSpecificValue(ulong offset)
-    {
-        return GetValue(offset, ProviderSpecificClrType);
-    }
+    internal object GetProviderSpecificValue(ulong offset) => GetValue(offset, ProviderSpecificClrType);
 
     protected virtual Type GetColumnType()
     {
@@ -195,5 +195,49 @@ internal class VectorDataReaderBase : IDisposable, IDuckDBDataReader
 
     public virtual void Dispose()
     {
+    }
+
+    private static class NullableHandler<T>
+    {
+        private static Type type;
+        private static Type? underlyingType;
+
+        static NullableHandler()
+        {
+            type = typeof(T);
+
+            var allowsNullValue = type.AllowsNullValue(out IsNullableValueType, out underlyingType);
+
+            Read = IsNullableValueType ? Compile() : null!;
+            IsReferenceType = allowsNullValue && !IsNullableValueType;
+        }
+
+        public static readonly bool IsNullableValueType;
+        public static readonly bool IsReferenceType;
+        public static readonly Func<VectorDataReaderBase, ulong, T> Read;
+
+        // For T = int?, builds a delegate equivalent to:
+        //   (VectorDataReaderBase reader, ulong offset) =>
+        //       reader.IsValid(offset)
+        //           ? (int?)reader.GetValidValue<int>(offset)
+        //           : default(int?)
+        private static Func<VectorDataReaderBase, ulong, T> Compile()
+        {
+            if (underlyingType is null) return null!;
+
+            var reader = Expression.Parameter(typeof(VectorDataReaderBase));
+            var offset = Expression.Parameter(typeof(ulong));
+
+            var isValid = Expression.Call(reader, typeof(VectorDataReaderBase).GetMethod(nameof(IsValid))!, offset);
+
+            var methodInfo = typeof(VectorDataReaderBase).GetMethod(nameof(GetValidValue), BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var genericGetValidValue = methodInfo.MakeGenericMethod(underlyingType);
+
+            var getValidValue = Expression.Call(reader, genericGetValidValue, offset);
+
+            var body = Expression.Condition(isValid, Expression.Convert(getValidValue, type), Expression.Default(type));
+
+            return Expression.Lambda<Func<VectorDataReaderBase, ulong, T>>(body, reader, offset).Compile();
+        }
     }
 }

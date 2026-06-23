@@ -68,9 +68,4 @@ internal sealed unsafe class EnumVectorDataWriter(IntPtr vector, void* vectorDat
         };
     }
 
-    public override void Dispose()
-    {
-        logicalType.Dispose();
-        base.Dispose();
-    }
 }

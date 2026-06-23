@@ -93,6 +93,7 @@ internal static class ClrToDuckDBConverter
             (DuckDBType.Blob, byte[] value) => NativeMethods.Value.DuckDBCreateBlob(value, value.Length),
             (DuckDBType.List, ICollection value) => CreateCollectionValue(logicalType, value, true, dbType),
             (DuckDBType.Array, ICollection value) => CreateCollectionValue(logicalType, value, false, dbType),
+            (_, ICollection value) when item is not byte[] => CreateListFromClrType(value, dbType),
             _ when ValueCreators.TryGetValue(dbType, out var converter) => converter(item),
             _ => NativeMethods.Value.DuckDBCreateVarchar(item.ToString())
         };
@@ -120,23 +121,42 @@ internal static class ClrToDuckDBConverter
 
     private static DuckDBValue CreateCollectionValue(DuckDBLogicalType logicalType, ICollection collection, bool isList, DbType dbType)
     {
-        using var collectionItemType = isList ? NativeMethods.LogicalType.DuckDBListTypeChildType(logicalType) :
-                                                NativeMethods.LogicalType.DuckDBArrayTypeChildType(logicalType);
+        using var childType = isList ? NativeMethods.LogicalType.DuckDBListTypeChildType(logicalType) :
+                                       NativeMethods.LogicalType.DuckDBArrayTypeChildType(logicalType);
 
-        var duckDBType = NativeMethods.LogicalType.DuckDBGetTypeId(collectionItemType);
+        var values = BuildValues(childType, collection, dbType);
 
+        return isList ? NativeMethods.Value.DuckDBCreateListValue(childType, values, collection.Count)
+                      : NativeMethods.Value.DuckDBCreateArrayValue(childType, values, collection.Count);
+    }
+
+    private static DuckDBValue CreateListFromClrType(ICollection collection, DbType dbType)
+    {
+        var elementType = collection.GetType().GetInterface(typeof(IEnumerable<>).Name)?.GetGenericArguments()[0];
+
+        if (elementType == null)
+        {
+            return NativeMethods.Value.DuckDBCreateVarchar(collection.ToString());
+        }
+
+        using var childType = elementType.GetLogicalType();
+        var values = BuildValues(childType, collection, dbType);
+
+        return NativeMethods.Value.DuckDBCreateListValue(childType, values, collection.Count);
+    }
+
+    private static DuckDBValue[] BuildValues(DuckDBLogicalType childType, ICollection collection, DbType dbType)
+    {
+        var childDuckDBType = NativeMethods.LogicalType.DuckDBGetTypeId(childType);
         var values = new DuckDBValue[collection.Count];
 
         var index = 0;
         foreach (var item in collection)
         {
-            var duckDBValue = item.ToDuckDBValue(collectionItemType, duckDBType, dbType);
-            values[index] = duckDBValue;
-            index++;
+            values[index++] = item.ToDuckDBValue(childType, childDuckDBType, dbType);
         }
 
-        return isList ? NativeMethods.Value.DuckDBCreateListValue(collectionItemType, values, collection.Count)
-                      : NativeMethods.Value.DuckDBCreateArrayValue(collectionItemType, values, collection.Count);
+        return values;
     }
 
     private static DuckDBValue DecimalToDuckDBValue(decimal value)

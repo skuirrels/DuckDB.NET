@@ -37,6 +37,7 @@ internal static class TypeExtensions
         { typeof(DateTimeOffset), DuckDBType.TimestampTz},
         { typeof(BigInteger), DuckDBType.HugeInt},
         { typeof(string), DuckDBType.Varchar},
+        { typeof(byte[]), DuckDBType.Blob},
         { typeof(decimal), DuckDBType.Decimal},
         { typeof(object), DuckDBType.Any},
     };
@@ -47,23 +48,20 @@ internal static class TypeExtensions
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Type UnderlyingTypeOrSelf(this Type type) => Nullable.GetUnderlyingType(type) ?? type;
 
-    public static (bool isNullableValueType, Type type) IsNullableValueType<T>()
-    {
-        var targetType = typeof(T);
-
-        var isNullableValueType = default(T) is null && targetType.IsValueType;
-
-        return (isNullableValueType, targetType);
-    }
-
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsFloatingNumericType<T>()
     {
-        return FloatingNumericTypes.Contains(typeof(T));
+        return typeof(T) == typeof(decimal) || typeof(T) == typeof(float) || typeof(T) == typeof(double);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsIntegralNumericType<T>()
     {
-        return IntegralNumericTypes.Contains(typeof(T));
+        return typeof(T) == typeof(byte) || typeof(T) == typeof(sbyte) ||
+               typeof(T) == typeof(short) || typeof(T) == typeof(ushort) ||
+               typeof(T) == typeof(int) || typeof(T) == typeof(uint) ||
+               typeof(T) == typeof(long) || typeof(T) == typeof(ulong) ||
+               typeof(T) == typeof(BigInteger);
     }
 
     public static bool IsNumeric(this Type type)
@@ -90,6 +88,13 @@ internal static class TypeExtensions
         if (type == typeof(decimal))
         {
             return NativeMethods.LogicalType.DuckDBCreateDecimalType(38, 18);
+        }
+
+        if (type.IsAssignableTo(typeof(IList)) && type.IsGenericType)
+        {
+            var genericTypeParameter = type.GetGenericArguments()[0];
+            using var nestedType = genericTypeParameter.GetLogicalType();
+            return NativeMethods.LogicalType.DuckDBCreateListType(nestedType);
         }
 
         if (ClrToDuckDBTypeMap.TryGetValue(type, out var duckDBType))

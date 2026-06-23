@@ -90,6 +90,7 @@ internal sealed class PropertyMapping<T, TProperty> : IPropertyMapping<T>
         {
             // Reference types
             string v => row.AppendValue(v),
+            byte[] v => row.AppendValue(v),
 
             // Value types
             bool v => row.AppendValue(v),

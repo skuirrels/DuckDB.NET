@@ -49,6 +49,11 @@ public partial class NativeMethods
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static unsafe partial void DuckDBTableFunctionSetFunction(IntPtr tableFunction, delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void> callback);
 
+        [SuppressGCTransition]
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_table_function_supports_projection_pushdown")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial void DuckDBTableFunctionSupportsProjectionPushdown(IntPtr tableFunction, [MarshalAs(UnmanagedType.I1)] bool pushdown);
+
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_register_table_function")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBState DuckDBRegisterTableFunction(DuckDBNativeConnection con, IntPtr tableFunction);
@@ -59,6 +64,10 @@ public partial class NativeMethods
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_get_extra_info")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial IntPtr DuckDBBindGetExtraInfo(IntPtr info);
+
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_table_function_get_client_context")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial void DuckDBTableFunctionGetClientContext(IntPtr info, out DuckDBClientContext outContext);
 
         // Maybe [SuppressGCTransition]: strdup name + copies LogicalType — two small allocations
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_add_result_column", StringMarshalling = StringMarshalling.Utf8)]
@@ -85,6 +94,11 @@ public partial class NativeMethods
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static unsafe partial void DuckDBBindSetBindData(IntPtr info, IntPtr bindData, delegate* unmanaged[Cdecl]<IntPtr, void> destroy);
 
+        [SuppressGCTransition]
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_set_cardinality")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static unsafe partial void DuckDBBindSetCardinality(IntPtr info, ulong cardinality, [MarshalAs(UnmanagedType.I1)] bool isExact);
+
         // Maybe [SuppressGCTransition]: strdup error string — one small allocation
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_set_error", StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -92,7 +106,46 @@ public partial class NativeMethods
 
         #endregion
 
+        #region TableFunctionInit
+
+        [SuppressGCTransition]
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_init_get_extra_info")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial IntPtr DuckDBInitGetExtraInfo(IntPtr info);
+
+        [SuppressGCTransition]
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_init_get_bind_data")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial IntPtr DuckDBInitGetBindData(IntPtr info);
+
+        [SuppressGCTransition]
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_init_get_column_count")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial ulong DuckDBInitGetColumnCount(IntPtr info);
+
+        [SuppressGCTransition]
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_init_get_column_index")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial ulong DuckDBInitGetColumnIndex(IntPtr info, ulong columnIndex);
+
+        [SuppressGCTransition]
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_init_set_init_data")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static unsafe partial void DuckDBInitSetInitData(IntPtr info, IntPtr initData, delegate* unmanaged[Cdecl]<IntPtr, void> destroy);
+
+        // Maybe [SuppressGCTransition]: strdup error string — one small allocation
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_init_set_error", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial void DuckDBInitSetError(IntPtr info, string error);
+
+        #endregion
+
         #region TableFunction
+
+        [SuppressGCTransition]
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_function_get_init_data")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial IntPtr DuckDBFunctionGetInitData(IntPtr info);
 
         [SuppressGCTransition]
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_function_get_extra_info")]

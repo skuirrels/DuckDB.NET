@@ -62,6 +62,59 @@ public class DuckDBMappedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBas
         reader.GetDateTime(3).Should().Be(new DateTime(1985, 5, 20));
     }
 
+    // Example entity with a binary column
+    public class FileEntry
+    {
+        public int Id { get; set; }
+        public byte[] Data { get; set; } = Array.Empty<byte>();
+    }
+
+    public class FileEntryMap : DuckDBAppenderMap<FileEntry>
+    {
+        public FileEntryMap()
+        {
+            Map(f => f.Id);
+            Map(f => f.Data);
+        }
+    }
+
+    [Fact]
+    public void MappedAppender_SupportsByteArray()
+    {
+        Command.CommandText = "CREATE TABLE file_entry(id INTEGER, data BLOB);";
+        Command.ExecuteNonQuery();
+
+        var entries = new[]
+        {
+            new FileEntry { Id = 1, Data = new byte[] { 1, 2, 3 } },
+            new FileEntry { Id = 2, Data = new byte[] { 10, 20, 30, 40 } },
+        };
+
+        using (var appender = Connection.CreateAppender<FileEntry, FileEntryMap>("file_entry"))
+        {
+            appender.AppendRecords(entries);
+        }
+
+        Command.CommandText = "SELECT id, data FROM file_entry ORDER BY id";
+        using var reader = Command.ExecuteReader();
+
+        reader.Read().Should().BeTrue();
+        reader.GetInt32(0).Should().Be(1);
+        ReadBlob(reader, 1).Should().Equal(1, 2, 3);
+
+        reader.Read().Should().BeTrue();
+        reader.GetInt32(0).Should().Be(2);
+        ReadBlob(reader, 1).Should().Equal(10, 20, 30, 40);
+
+        static byte[] ReadBlob(System.Data.Common.DbDataReader reader, int ordinal)
+        {
+            using var stream = reader.GetStream(ordinal);
+            using var memory = new MemoryStream();
+            stream.CopyTo(memory);
+            return memory.ToArray();
+        }
+    }
+
     // Example with type mismatch - should throw
     public class WrongTypeMap : DuckDBAppenderMap<Person>
     {
