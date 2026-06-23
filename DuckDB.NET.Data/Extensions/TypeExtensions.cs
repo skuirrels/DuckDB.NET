@@ -37,6 +37,7 @@ internal static class TypeExtensions
         { typeof(DateTimeOffset), DuckDBType.TimestampTz},
         { typeof(BigInteger), DuckDBType.HugeInt},
         { typeof(string), DuckDBType.Varchar},
+        { typeof(byte[]), DuckDBType.Blob},
         { typeof(decimal), DuckDBType.Decimal},
         { typeof(object), DuckDBType.Any},
     };

@@ -6,9 +6,10 @@
 - Updated to DuckDB v1.5.3
 
 New features:
-- Projection pushdown for table functions.
-- Estimated cardinality hints for table functions.
-- IList&lt;T&gt; column support in table functions.
+- Improved support for binding ICollection parameters (#326)
+
+Fixes:
+- Fixed ObjectDisposedException in enum appender (#327)
     </PackageReleaseNotes>
     <SignAssembly>True</SignAssembly>
     <AssemblyOriginatorKeyFile>..\keyPair.snk</AssemblyOriginatorKeyFile>

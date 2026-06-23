@@ -353,6 +353,35 @@ public class DuckDBDataReaderTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db
         schemaTable.Rows[0]["NumericPrecision"].Should().Be(10);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Repro332_SchemaTableAfterNextResult(bool streaming)
+    {
+        Command.CommandText = "SELECT 1 AS a, 2 AS b";
+        Command.UseStreamingMode = streaming;
+        using var reader = Command.ExecuteReader();
+
+        while (reader.Read()) { }
+        reader.NextResult().Should().BeFalse(); // exhausts result set, like DataTable.Load does
+
+        var schemaTable = reader.GetSchemaTable();
+        schemaTable.Rows.Count.Should().Be(2);
+    }
+
+    [Fact]
+    public void Repro332_DataTableLoad()
+    {
+        Command.CommandText = "SELECT 1 AS a, 2 AS b";
+        using var reader = Command.ExecuteReader();
+
+        var table = new DataTable();
+        table.Load(reader); // calls NextResult() internally after reading rows
+
+        var schemaTable = reader.GetSchemaTable();
+        schemaTable.Rows.Count.Should().Be(2);
+    }
+
     [Fact]
     public void ReadDecimalSchemaWithoutTableRow()
     {
