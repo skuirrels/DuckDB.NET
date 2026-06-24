@@ -8,7 +8,8 @@ internal static class DuckDBErrorDataExtensions
         {
             if (errorData.HasError)
             {
-                throw new DuckDBException($"{message} {errorData.Message}".TrimEnd());
+                var errorType = NativeMethods.ErrorData.DuckDBErrorDataErrorType(errorData);
+                throw new DuckDBException($"{message} {errorData.Message}".TrimEnd(), errorType);
             }
         }
     }

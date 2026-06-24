@@ -4,7 +4,6 @@ using System.Threading.Tasks;
 using Apache.Arrow;
 using Apache.Arrow.C;
 using Apache.Arrow.Ipc;
-using DuckDB.NET.Native;
 
 namespace DuckDB.NET.Data.Arrow;
 

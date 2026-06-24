@@ -1,5 +1,4 @@
-﻿using DuckDB.NET.Data.Common;
-using DuckDB.NET.Data.DataChunk.Reader;
+﻿using DuckDB.NET.Data.DataChunk.Reader;
 using System.IO;
 using System.Runtime.CompilerServices;
 
