@@ -135,7 +135,7 @@ public class DuckDBAppenderRow : IDuckDBAppenderRow
 
         if (state == DuckDBState.Error)
         {
-            DuckDBAppender.ThrowLastError(nativeAppender);
+            NativeMethods.Appender.DuckDBAppenderErrorData(nativeAppender).ThrowOnError();
         }
 
         columnIndex++;

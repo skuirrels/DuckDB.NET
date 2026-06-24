@@ -1,5 +1,6 @@
 ﻿using DuckDB.NET.Data.Common;
 using DuckDB.NET.Data.DataChunk.Writer;
+using DuckDB.NET.Data.Extensions;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 
@@ -72,7 +73,7 @@ public class DuckDBAppender : IDisposable
         var state = NativeMethods.Appender.DuckDBAppenderClear(nativeAppender);
         if (!state.IsSuccess())
         {
-            ThrowLastError(nativeAppender);
+            NativeMethods.Appender.DuckDBAppenderErrorData(nativeAppender).ThrowOnError();
         }
 
         rowCount = 0;
@@ -102,7 +103,7 @@ public class DuckDBAppender : IDisposable
             var state = NativeMethods.Appender.DuckDBAppenderClose(nativeAppender);
             if (!state.IsSuccess())
             {
-                ThrowLastError(nativeAppender);
+                NativeMethods.Appender.DuckDBAppenderErrorData(nativeAppender).ThrowOnError();
             }
         }
         finally
@@ -137,18 +138,9 @@ public class DuckDBAppender : IDisposable
 
         if (!state.IsSuccess())
         {
-            ThrowLastError(nativeAppender);
+            NativeMethods.Appender.DuckDBAppenderErrorData(nativeAppender).ThrowOnError();
         }
 
         NativeMethods.DataChunks.DuckDBDataChunkReset(dataChunk);
-    }
-
-    [DoesNotReturn]
-    [StackTraceHidden]
-    internal static void ThrowLastError(Native.DuckDBAppender appender)
-    {
-        var errorMessage = NativeMethods.Appender.DuckDBAppenderError(appender);
-
-        throw new DuckDBException(errorMessage);
     }
 }
