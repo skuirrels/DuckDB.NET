@@ -33,6 +33,10 @@ Fixes:
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Apache.Arrow" Version="23.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\DuckDB.NET.Bindings\Bindings.csproj" />
   </ItemGroup>
 
