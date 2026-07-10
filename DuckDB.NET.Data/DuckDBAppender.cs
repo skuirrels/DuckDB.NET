@@ -17,6 +17,7 @@ public class DuckDBAppender : IDisposable
     private readonly DuckDBLogicalType[] logicalTypes;
     private readonly DuckDBDataChunk dataChunk;
     private readonly VectorDataWriterBase[] vectorWriters;
+    private DuckDBAppenderRow? currentRow;
 
     internal DuckDBAppender(Native.DuckDBAppender appender, string qualifiedTableName)
     {
@@ -60,7 +61,19 @@ public class DuckDBAppender : IDisposable
         }
 
         rowCount++;
-        return new DuckDBAppenderRow(qualifiedTableName, vectorWriters, rowCount - 1, dataChunk, nativeAppender);
+
+        // A single row is filled and ended before the next CreateRow() call, so reuse one instance
+        // instead of allocating a DuckDBAppenderRow per row.
+        if (currentRow is null)
+        {
+            currentRow = new DuckDBAppenderRow(qualifiedTableName, vectorWriters, rowCount - 1, dataChunk, nativeAppender);
+        }
+        else
+        {
+            currentRow.Reset(rowCount - 1);
+        }
+
+        return currentRow;
     }
 
     public void Clear()
