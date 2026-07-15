@@ -17,7 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DuckDB.NET.Data\Data.csproj" />
-    <ProjectReference Include="..\DuckDB.NET.Bindings\Bindings.csproj" />
+    <ProjectReference Include="..\DuckDB.NET.Bindings\Bindings.csproj" Properties="BuildType=Full" />
   </ItemGroup>
 
   <!-- Copy the already-downloaded native DuckDB library into the benchmark output so it can be

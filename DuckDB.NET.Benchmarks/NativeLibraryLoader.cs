@@ -25,7 +25,12 @@ internal static class NativeLibraryLoader
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            return Environment.Is64BitProcess ? "win-x64" : "win-x86";
+            return RuntimeInformation.ProcessArchitecture switch
+            {
+                Architecture.X64 => "win-x64",
+                Architecture.Arm64 => "win-arm64",
+                _ => null,
+            };
         }
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
