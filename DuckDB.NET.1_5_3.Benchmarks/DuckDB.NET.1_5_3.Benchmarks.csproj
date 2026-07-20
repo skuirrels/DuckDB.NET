@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Optimize>true</Optimize>
+    <AssemblyName>DuckDB.NET.1_5_3.Benchmarks</AssemblyName>
+    <RootNamespace>DuckDB.NET.Benchmarks</RootNamespace>
+    <DefineConstants>$(DefineConstants);DUCKDB_NET_BASELINE_1_5_3</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.4" />
+    <PackageReference Include="DuckDB.NET.Data.Full" Version="1.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\DuckDB.NET.Benchmarks\NativeLibraryLoader.cs" Link="NativeLibraryLoader.cs" />
+    <Compile Include="..\DuckDB.NET.Benchmarks\PreparedCommandBenchmark.cs" Link="PreparedCommandBenchmark.cs" />
+    <Compile Include="..\DuckDB.NET.Benchmarks\PreparedCommandWorkload.cs" Link="PreparedCommandWorkload.cs" />
+    <Compile Include="..\DuckDB.NET.Benchmarks\RealisticBenchmarks.cs" Link="RealisticBenchmarks.cs" />
+    <Compile Include="..\DuckDB.NET.Benchmarks\RealisticWorkload.cs" Link="RealisticWorkload.cs" />
+    <Compile Include="..\DuckDB.NET.Benchmarks\Program.cs" Link="Program.cs" />
+  </ItemGroup>
+
+</Project>
