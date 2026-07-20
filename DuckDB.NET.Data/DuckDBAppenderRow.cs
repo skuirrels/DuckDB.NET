@@ -11,6 +11,8 @@ public class DuckDBAppenderRow : IDuckDBAppenderRow
     private readonly DuckDBDataChunk dataChunk;
     private readonly Native.DuckDBAppender nativeAppender;
 
+    internal ulong ChunkRowIndex => rowIndex;
+
     internal DuckDBAppenderRow(string qualifiedTableName, VectorDataWriterBase[] vectorWriters,
                                ulong rowIndex, DuckDBDataChunk dataChunk, Native.DuckDBAppender nativeAppender)
     {
