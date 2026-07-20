@@ -8,8 +8,28 @@ using DuckDB.NET.Benchmarks;
 // while the project file stays Benchmarks.csproj, so BenchmarkDotNet's default toolchain
 // can't locate the csproj. Run in-process to avoid the separate build/spawn step.
 var config = DefaultConfig.Instance
-    .AddJob(Job.ShortRun.WithToolchain(InProcessEmitToolchain.Instance));
+    .AddJob(
+        Job.Default
+            .WithId("DriverComparison")
+            .WithToolchain(InProcessEmitToolchain.Instance)
+            .WithLaunchCount(1)
+            .WithWarmupCount(5)
+            .WithIterationCount(10));
+
+var benchmarkTypes = new List<Type>
+{
+    typeof(PreparedCommandBenchmark),
+    typeof(PreparedCommandSetupBenchmark),
+    typeof(AnalyticalQueryBenchmark),
+    typeof(ResultMaterializationBenchmark),
+    typeof(BulkIngestionBenchmark),
+    typeof(TpchBenchmark),
+};
+
+#if DUCKDB_EFCORE_PROVIDER_1_9_0
+benchmarkTypes.Add(typeof(EfCoreProviderBulkIngestionBenchmark));
+#endif
 
 BenchmarkSwitcher
-    .FromTypes([typeof(PreparedCommandBenchmark), typeof(PreparedCommandSetupBenchmark)])
+    .FromTypes(benchmarkTypes.ToArray())
     .Run(args, config);
