@@ -1,9 +1,6 @@
 ﻿using DuckDB.NET.Data.Common;
 using DuckDB.NET.Data.DataChunk.Writer;
 using DuckDB.NET.Data.Extensions;
-using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
-
 namespace DuckDB.NET.Data;
 
 /// <summary>
@@ -70,8 +67,9 @@ public class DuckDBAppender : IDisposable
     /// <see cref="IDuckDBAppenderRow.EndRow"/> after the callback returns.</param>
     /// <remarks>
     /// The row is valid only during the callback and must not be retained. The callback must not
-    /// call other methods on this appender. If the callback fails, all rows added by this appender
-    /// are cleared and the appender cannot be reused.
+    /// call other methods on this appender. If the callback or automatic
+    /// <see cref="IDuckDBAppenderRow.EndRow"/> fails, all previously completed rows are flushed,
+    /// the failed row is discarded, and the appender cannot be reused.
     /// </remarks>
     public void AppendRow(Action<IDuckDBAppenderRow> writeRow)
     {
@@ -91,8 +89,9 @@ public class DuckDBAppender : IDisposable
     /// <param name="writeRow">A callback that appends every column value. This method calls
     /// <see cref="IDuckDBAppenderRow.EndRow"/> after the callback returns.</param>
     /// <remarks>
-    /// The callback must not call other methods on this appender. If the callback fails, the
-    /// appender is cleared and cannot be reused.
+    /// The callback must not call other methods on this appender. If the callback or automatic
+    /// <see cref="IDuckDBAppenderRow.EndRow"/> fails, all previously completed rows are flushed,
+    /// the failed row is discarded, and the appender cannot be reused.
     /// </remarks>
     public void AppendRow<TState>(TState state, Action<IDuckDBAppenderRow, TState> writeRow)
     {
@@ -108,11 +107,21 @@ public class DuckDBAppender : IDisposable
             writeRow(row, state);
             row.EndRow();
         }
-        catch
+        catch (Exception appendException)
         {
             if (row is not null)
             {
-                AbortAppendBatch(row);
+                try
+                {
+                    FinalizeFailedAppendRow(row);
+                }
+                catch (Exception finalizationException)
+                {
+                    throw new AggregateException(
+                        "Appending the row failed and the previously completed rows could not be finalized",
+                        appendException,
+                        finalizationException);
+                }
             }
 
             throw;
@@ -145,11 +154,6 @@ public class DuckDBAppender : IDisposable
 
     private ulong PrepareRow()
     {
-        if (closed)
-        {
-            throw new InvalidOperationException("Appender is already closed");
-        }
-
         if (rowCount % DuckDBGlobalData.VectorSize == 0)
         {
             AppendDataChunk();
@@ -167,16 +171,6 @@ public class DuckDBAppender : IDisposable
     {
         EnsureUsable();
 
-        if (closed)
-        {
-            throw new InvalidOperationException("Appender is already closed");
-        }
-
-        ClearCore();
-    }
-
-    private void ClearCore()
-    {
         var state = NativeMethods.Appender.DuckDBAppenderClear(nativeAppender);
         if (!state.IsSuccess())
         {
@@ -190,24 +184,17 @@ public class DuckDBAppender : IDisposable
 
     public void Close()
     {
-        EnsureNotAppendingRow();
+        EnsureUsable();
+        CloseCore();
+    }
+
+    private void CloseCore()
+    {
         closed = true;
 
         try
         {
             AppendDataChunk();
-
-            foreach (var logicalType in logicalTypes)
-            {
-                logicalType.Dispose();
-            }
-
-            foreach (var writer in vectorWriters)
-            {
-                writer?.Dispose();
-            }
-
-            dataChunk.Dispose();
 
             var state = NativeMethods.Appender.DuckDBAppenderClose(nativeAppender);
             if (!state.IsSuccess())
@@ -217,8 +204,30 @@ public class DuckDBAppender : IDisposable
         }
         finally
         {
-            nativeAppender.Close();
+            try
+            {
+                DisposeManagedResources();
+            }
+            finally
+            {
+                nativeAppender.Close();
+            }
         }
+    }
+
+    private void DisposeManagedResources()
+    {
+        foreach (var logicalType in logicalTypes)
+        {
+            logicalType.Dispose();
+        }
+
+        foreach (var writer in vectorWriters)
+        {
+            writer?.Dispose();
+        }
+
+        dataChunk.Dispose();
     }
 
     public void Dispose()
@@ -253,13 +262,14 @@ public class DuckDBAppender : IDisposable
         NativeMethods.DataChunks.DuckDBDataChunkReset(dataChunk);
     }
 
-    private void AbortAppendBatch(DuckDBAppenderRow row)
+    private void FinalizeFailedAppendRow(DuckDBAppenderRow row)
     {
+        // The row index is also the number of completed rows before the failed row in this chunk.
+        rowCount = row.ChunkRowIndex;
         row.Invalidate();
         isFaulted = true;
 
-        // The native appender cannot roll back only the current row, so discard its whole batch.
-        ClearCore();
+        CloseCore();
     }
 
     private void EnsureNotAppendingRow()
@@ -277,6 +287,11 @@ public class DuckDBAppender : IDisposable
         if (isFaulted)
         {
             throw new InvalidOperationException("The appender cannot be reused after an AppendRow callback failed");
+        }
+
+        if (closed)
+        {
+            throw new InvalidOperationException("Appender is already closed");
         }
     }
 }
