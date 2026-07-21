@@ -5,6 +5,8 @@
     <PackageReleaseNotes>
 - Updated to DuckDB v1.5.4
     </PackageReleaseNotes>
+    <Description Condition="'$(ForkPreview)' == 'true'">Unofficial preview build of the DuckDB native bindings from the skuirrels DuckDB.NET fork.</Description>
+    <PackageReleaseNotes Condition="'$(ForkPreview)' == 'true'">Unofficial preview bindings for the consolidated DuckDB.NET performance work, bundling DuckDB v1.5.4.</PackageReleaseNotes>
     <RootNamespace>DuckDB.NET.Native</RootNamespace>
     <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx</RuntimeIdentifiers>
     <DuckDbArtifactRoot Condition=" '$(DuckDbArtifactRoot)' == '' ">https://github.com/duckdb/duckdb/releases/download/v1.5.4</DuckDbArtifactRoot>

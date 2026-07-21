@@ -19,11 +19,13 @@
     <Company>Giorgi Dalakishvili</Company>
     <Copyright>Copyright © 2020 - $(Year) Giorgi Dalakishvili</Copyright>
 
+    <ForkPackagePrefix Condition="'$(ForkPreview)' == 'true' AND '$(ForkPackagePrefix)' == ''">Skuirrels.</ForkPackagePrefix>
     <Product>DuckDB.NET.$(MSBuildProjectName)</Product>
-    <PackageId>DuckDB.NET.$(MSBuildProjectName)</PackageId>
+    <PackageId>$(ForkPackagePrefix)DuckDB.NET.$(MSBuildProjectName)</PackageId>
     <PackageTags>DuckDB;ADO.NET;Database;Olap;Embedded</PackageTags>
     <PackageIcon>Logo.jpg</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReadmeFile Condition="'$(ForkPreview)' == 'true'">README-PREVIEW.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
 
     <Deterministic>true</Deterministic>
@@ -36,6 +38,11 @@
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <AllowedOutputExtensionsInPackageBuildOutputFolder>$(AllowedOutputExtensionsInPackageBuildOutputFolder);.pdb</AllowedOutputExtensionsInPackageBuildOutputFolder>
 
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(ForkPreview)' == 'true'">
+    <RepositoryUrl>https://github.com/skuirrels/DuckDB.NET</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/skuirrels/DuckDB.NET</PackageProjectUrl>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -63,7 +70,18 @@
       <Pack>True</Pack>
       <PackagePath></PackagePath>
     </None>
+    <None Include="..\README-PREVIEW.md" Condition="'$(ForkPreview)' == 'true'">
+      <Pack>True</Pack>
+      <PackagePath></PackagePath>
+    </None>
   </ItemGroup>
+
+  <Target Name="ValidateForkPreviewPackageMetadata" BeforeTargets="Pack" Condition="'$(ForkPreview)' == 'true'">
+    <Error Condition="$([System.String]::Copy('$(PackageId)').StartsWith('Skuirrels.')) != 'True'"
+           Text="Fork preview packages must use the Skuirrels package prefix." />
+    <Error Condition="$([System.String]::Copy('$(PackageVersion)').Contains('-preview.')) != 'True'"
+           Text="Fork preview package versions must contain the -preview. prerelease suffix." />
+  </Target>
 
   <PropertyGroup Label="CI" Condition="'$(CI)' == ''">
     <CI>false</CI>
