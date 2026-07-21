@@ -1,0 +1,131 @@
+name: Preview Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish-preview:
+    if: github.event.release.prerelease == true && startsWith(github.event.release.tag_name, 'v1.5.4-preview.')
+    runs-on: ubuntu-latest
+    environment: nuget-preview
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set preview version
+        shell: bash
+        run: |
+          version="${{ github.event.release.tag_name }}"
+          version="${version#v}"
+          if [[ ! "$version" =~ ^1\.5\.4-preview\.[0-9]+$ ]]; then
+            echo "Unexpected preview version: $version" >&2
+            exit 1
+          fi
+          echo "PREVIEW_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore DuckDB.NET.slnx /p:CI=false
+
+      - name: Build
+        run: >-
+          dotnet build DuckDB.NET.slnx
+          --configuration Release
+          --no-restore
+          /m:1
+          /p:BuildType=Full
+          /p:CI=false
+          /p:ForkPreview=true
+          /p:Version=${{ env.PREVIEW_VERSION }}
+          /p:PackageVersion=${{ env.PREVIEW_VERSION }}
+          /p:UseSharedCompilation=false
+
+      - name: Test
+        run: >-
+          dotnet test DuckDB.NET.Test/Test.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --logger "console;verbosity=quiet"
+          /p:BuildType=Full
+          /p:CI=false
+          /p:ForkPreview=true
+          /p:DoesNotReturnAttribute=DoesNotReturnAttribute
+
+      - name: Pack preview packages
+        shell: bash
+        run: |
+          mkdir -p artifacts/preview
+          common_args=(
+            --configuration Release
+            --no-build
+            --no-restore
+            --output artifacts/preview
+            /m:1
+            /p:BuildType=Full
+            /p:CI=false
+            /p:ForkPreview=true
+            /p:PreviewPack=true
+            /p:Version="$PREVIEW_VERSION"
+            /p:PackageVersion="$PREVIEW_VERSION"
+          )
+          dotnet pack DuckDB.NET.Bindings/Bindings.csproj "${common_args[@]}"
+
+          dotnet restore DuckDB.NET.Data/Data.csproj \
+            --source artifacts/preview \
+            --source https://api.nuget.org/v3/index.json \
+            /p:BuildType=Full \
+            /p:CI=false \
+            /p:ForkPreview=true \
+            /p:PreviewPack=true \
+            /p:Version="$PREVIEW_VERSION" \
+            /p:PackageVersion="$PREVIEW_VERSION"
+
+          dotnet pack DuckDB.NET.Data/Data.csproj "${common_args[@]}"
+
+      - name: Validate and smoke-test packages
+        run: ./scripts/validate-preview-packages.sh artifacts/preview "$PREVIEW_VERSION"
+
+      - name: Generate checksums
+        working-directory: artifacts/preview
+        run: sha256sum *.nupkg > SHA256SUMS
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: duckdb-net-${{ env.PREVIEW_VERSION }}
+          path: |
+            artifacts/preview/*.nupkg
+            artifacts/preview/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Attach packages to GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" artifacts/preview/* --clobber
+
+      - name: Authenticate to NuGet.org
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: skuirrels
+
+      - name: Publish preview packages to NuGet.org
+        run: >-
+          dotnet nuget push "artifacts/preview/*.nupkg"
+          --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}"
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate

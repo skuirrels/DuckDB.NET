@@ -16,14 +16,22 @@ internal static class DateTimeExtensions
 
     public static DuckDBTimestampStruct ToTimestampStruct(this DateTimeOffset value)
     {
-        var timestamp = DuckDBTimestamp.FromDateTime(value.UtcDateTime).ToDuckDBTimestampStruct();
-
-        return timestamp;
+        return value.UtcDateTime.ToTimestampStruct(DuckDBType.Timestamp);
     }
 
     public static DuckDBTimestampStruct ToTimestampStruct(this DateTime value, DuckDBType duckDBType)
     {
-        var timestamp = DuckDBTimestamp.FromDateTime(value).ToDuckDBTimestampStruct();
+        var ticksSinceEpoch = value.Ticks - DateTime.UnixEpoch.Ticks;
+        var microseconds = ticksSinceEpoch / TicksPerMicrosecond;
+
+        // duckdb_to_timestamp truncates the time-of-day to microseconds after resolving the date,
+        // which is floor division for pre-epoch values with sub-microsecond ticks.
+        if (ticksSinceEpoch < 0 && ticksSinceEpoch % TicksPerMicrosecond != 0)
+        {
+            microseconds--;
+        }
+
+        var timestamp = new DuckDBTimestampStruct { Micros = microseconds };
 
         if (duckDBType == DuckDBType.TimestampNs)
         {
