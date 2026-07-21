@@ -64,4 +64,21 @@ public class AppenderBenchmark
             });
         }
     }
+
+    [Benchmark]
+    public void AppendRowsWithScopedWriter()
+    {
+        using var appender = connection.CreateAppender("bench");
+
+        for (var i = 0; i < RowCount; i++)
+        {
+            appender.AppendRowScoped(i, static (ref DuckDBAppenderRowWriter writer, int value) =>
+            {
+                writer.AppendValue(value);
+                writer.AppendValue((long)value);
+                writer.AppendValue((double)value);
+                writer.AppendValue(value % 2 == 0);
+            });
+        }
+    }
 }
