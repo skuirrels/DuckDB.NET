@@ -5,12 +5,10 @@ fork of the [upstream DuckDB.NET project](https://github.com/Giorgi/DuckDB.NET).
 It provides preview packages containing the consolidated performance work while
 the corresponding upstream pull requests are reviewed and released.
 
-[![Preview release](https://img.shields.io/github/actions/workflow/status/skuirrels/DuckDB.NET/preview-release.yml?branch=develop&label=preview%20release&logo=GitHub&style=for-the-badge)](https://github.com/skuirrels/DuckDB.NET/actions/workflows/preview-release.yml)
-[![License](https://img.shields.io/badge/License-Mit-blue.svg?style=for-the-badge&logo=mit)](LICENSE.md)
-[![Discord](https://img.shields.io/badge/DuckDB-.Net-%23FFF000?logo=DuckDB&style=for-the-badge)](https://discord.com/channels/909674491309850675/1051088721996427265)
-
-[![NuGet Skuirrels.DuckDB.NET.Data.Full](https://img.shields.io/nuget/vpre/Skuirrels.DuckDB.NET.Data.Full.svg?label=Skuirrels.DuckDB.NET.Data.Full&style=for-the-badge&logo=NuGet)](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Data.Full/)
-[![NuGet Skuirrels.DuckDB.NET.Bindings.Full](https://img.shields.io/nuget/vpre/Skuirrels.DuckDB.NET.Bindings.Full.svg?label=Skuirrels.DuckDB.NET.Bindings.Full&style=for-the-badge&logo=NuGet)](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Bindings.Full/)
+[![NuGet (Data)](https://img.shields.io/nuget/vpre/Skuirrels.DuckDB.NET.Data.Full.svg?label=NuGet%20%28Data%29)](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Data.Full)
+[![NuGet (Bindings)](https://img.shields.io/nuget/vpre/Skuirrels.DuckDB.NET.Bindings.Full.svg?label=NuGet%20%28Bindings%29)](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Bindings.Full)
+[![.NET 8 and 10](https://img.shields.io/badge/.NET-8%20%7C%2010-512BD4)](https://dotnet.microsoft.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
 ![Project Icon](Logo.jpg "DuckDB.NET Project Icon")
 
