@@ -46,6 +46,15 @@ public class PreparedCommandBenchmark
         return (int)preparedCommand.ExecuteScalar()!;
     }
 
+    // Preserves the former ExecuteScalar path as a direct same-process comparison.
+    [Benchmark]
+    public int ExecutePreparedViaReader()
+    {
+        preparedParameter.Value = nextValue++;
+        using var reader = preparedCommand.ExecuteReader();
+        return reader.Read() ? (int)reader.GetValue(0) : default;
+    }
+
     private DuckDBCommand CreateCommand(out DuckDBParameter changingParameter)
     {
         var command = connection.CreateCommand();

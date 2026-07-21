@@ -35,6 +35,81 @@ public class DuckDBCommandTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db)
         command.ExecuteScalar().Should().Be(22);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PreparedExecuteScalarHandlesValuesNullsAndEmptyResults(bool useStreamingMode)
+    {
+        using var command = Connection.CreateCommand();
+        command.CommandText = "SELECT $value::INTEGER";
+        command.Parameters.Add(new DuckDBParameter("value", 42));
+        command.UseStreamingMode = useStreamingMode;
+        command.Prepare();
+
+        command.ExecuteScalar().Should().Be(42);
+
+        command.Parameters["value"].Value = DBNull.Value;
+        command.ExecuteScalar().Should().Be(DBNull.Value);
+
+        command.CommandText = "SELECT 42 WHERE FALSE";
+        command.Parameters.Clear();
+        command.Prepare();
+        command.ExecuteScalar().Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PreparedExecuteScalarHandlesRepresentativeReaderTypes(bool useStreamingMode)
+    {
+        using var command = Connection.CreateCommand();
+        command.UseStreamingMode = useStreamingMode;
+
+        command.CommandText = "SELECT 'duckdb'::VARCHAR";
+        command.Prepare();
+        command.ExecuteScalar().Should().Be("duckdb");
+
+        command.CommandText = "SELECT DATE '2026-07-21'";
+        command.Prepare();
+        command.ExecuteScalar().Should().Be(new DateOnly(2026, 7, 21));
+
+        command.CommandText = "SELECT [1, 2, 3]::INTEGER[]";
+        command.Prepare();
+        command.ExecuteScalar().Should().BeEquivalentTo(new[] { 1, 2, 3 });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PreparedExecuteScalarCanBeReusedAfterMaterializationFailure(bool useStreamingMode)
+    {
+        using var command = Connection.CreateCommand();
+        command.CommandText = "SELECT CASE WHEN $infinite THEN DATE 'infinity' ELSE DATE '2026-07-21' END";
+        command.Parameters.Add(new DuckDBParameter("infinite", true));
+        command.UseStreamingMode = useStreamingMode;
+        command.Prepare();
+
+        command.Invoking(value => value.ExecuteScalar())
+            .Should().Throw<InvalidOperationException>()
+            .WithMessage("Cannot convert infinite date value*");
+
+        command.Parameters["infinite"].Value = false;
+        command.ExecuteScalar().Should().Be(new DateOnly(2026, 7, 21));
+    }
+
+    [Fact]
+    public void PreparedExecuteScalarReturnsNullForNonQueryStatement()
+    {
+        using var connection = new DuckDBConnection("DataSource=:memory:");
+        connection.Open();
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "CREATE TABLE prepared_scalar(value INTEGER)";
+        command.Prepare();
+
+        command.ExecuteScalar().Should().BeNull();
+    }
+
     [Fact]
     public void PreparedCommandClearsBindingsBeforeReuse()
     {
