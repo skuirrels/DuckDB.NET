@@ -55,6 +55,54 @@ public class DuckDBCommandTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db)
     }
 
     [Fact]
+    public void PreparedExecuteNonQueryReturnsAffectedRowsAndCanBeReused()
+    {
+        using var connection = new DuckDBConnection("DataSource=:memory:");
+        connection.Open();
+
+        ExecuteNonQuery(connection, "CREATE TABLE prepared_values(value INTEGER)");
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO prepared_values VALUES ($value)";
+        command.Parameters.Add(new DuckDBParameter("value", 10));
+        command.Prepare();
+
+        command.ExecuteNonQuery().Should().Be(1);
+
+        command.Parameters["value"].Value = 20;
+        command.ExecuteNonQuery().Should().Be(1);
+
+        using var query = connection.CreateCommand();
+        query.CommandText = "SELECT value FROM prepared_values ORDER BY value";
+        using var reader = query.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetInt32(0).Should().Be(10);
+        reader.Read().Should().BeTrue();
+        reader.GetInt32(0).Should().Be(20);
+        reader.Read().Should().BeFalse();
+    }
+
+    [Fact]
+    public void PreparedExecuteNonQueryCanBeReusedAfterExecutionFailure()
+    {
+        using var connection = new DuckDBConnection("DataSource=:memory:");
+        connection.Open();
+
+        ExecuteNonQuery(connection, "CREATE TABLE unique_prepared_values(value INTEGER PRIMARY KEY)");
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO unique_prepared_values VALUES ($value)";
+        command.Parameters.Add(new DuckDBParameter("value", 10));
+        command.Prepare();
+
+        command.ExecuteNonQuery().Should().Be(1);
+        command.Invoking(value => value.ExecuteNonQuery()).Should().Throw<DuckDBException>();
+
+        command.Parameters["value"].Value = 20;
+        command.ExecuteNonQuery().Should().Be(1);
+    }
+
+    [Fact]
     public void PreparePreservesMultipleResultSetsAcrossExecutions()
     {
         using var command = Connection.CreateCommand();

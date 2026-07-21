@@ -98,6 +98,11 @@ public class DuckDBCommand : DbCommand
     {
         EnsureConnectionOpen();
 
+        if (preparedStatement is { } reusableStatement)
+        {
+            return ExecutePreparedNonQuery(reusableStatement, connection!.NativeConnection);
+        }
+
         var results = ExecuteStatements();
 
         var count = 0;
@@ -249,7 +254,7 @@ public class DuckDBCommand : DbCommand
         ReusablePreparedStatement reusableStatement,
         DuckDBNativeConnection nativeConnection)
     {
-        activeExecutions++;
+        BeginPreparedExecution();
 
         try
         {
@@ -257,17 +262,53 @@ public class DuckDBCommand : DbCommand
         }
         finally
         {
-            activeExecutions--;
+            CompletePreparedExecution();
+        }
+    }
 
-            if (activeExecutions == 0)
-            {
-                DisposeDeferredPreparedStatements();
-            }
+    private int ExecutePreparedNonQuery(
+        ReusablePreparedStatement reusableStatement,
+        DuckDBNativeConnection nativeConnection)
+    {
+        BeginPreparedExecution();
 
-            if (disposed && activeExecutions == 0)
+        try
+        {
+            var result = reusableStatement.Execute(parameters, UseStreamingMode, nativeConnection);
+
+            try
             {
-                UnregisterFromConnections();
+                var current = result;
+                return (int)NativeMethods.Query.DuckDBRowsChanged(ref current);
             }
+            finally
+            {
+                result.Close();
+            }
+        }
+        finally
+        {
+            CompletePreparedExecution();
+        }
+    }
+
+    private void BeginPreparedExecution()
+    {
+        activeExecutions++;
+    }
+
+    private void CompletePreparedExecution()
+    {
+        activeExecutions--;
+
+        if (activeExecutions == 0)
+        {
+            DisposeDeferredPreparedStatements();
+        }
+
+        if (disposed && activeExecutions == 0)
+        {
+            UnregisterFromConnections();
         }
     }
 
