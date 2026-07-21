@@ -1,4 +1,4 @@
-# DuckDB.NET fork preview
+# DuckDB.NET - Performance fork preview
 
 This is the [`skuirrels/DuckDB.NET`](https://github.com/skuirrels/DuckDB.NET)
 fork of the [upstream DuckDB.NET project](https://github.com/Giorgi/DuckDB.NET).
