@@ -780,6 +780,216 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
     }
 
     [Fact]
+    public void AppendRowScopedWritesMultipleMixedRowsIncludingNulls()
+    {
+        Command.CommandText = """
+                              CREATE TABLE managedAppenderStackOnlyRows(
+                                  id INTEGER,
+                                  event_time TIMESTAMP,
+                                  amount DOUBLE,
+                                  category VARCHAR,
+                                  active BOOLEAN)
+                              """;
+        Command.ExecuteNonQuery();
+
+        var rows = new[]
+        {
+            new ScopedMixedRow(1, DateTime.UnixEpoch.AddTicks(-1), 12.5, "alpha", true),
+            new ScopedMixedRow(2, DateTime.UnixEpoch.AddTicks(10), null, null, null),
+            new ScopedMixedRow(3, DateTime.UnixEpoch.AddDays(1), -3.25, "gamma", false),
+        };
+
+        using (var appender = Connection.CreateAppender("managedAppenderStackOnlyRows"))
+        {
+            foreach (var row in rows)
+            {
+                appender.AppendRowScoped(row,
+                    static (ref DuckDBAppenderRowWriter writer, ScopedMixedRow value) =>
+                    {
+                        writer.AppendValue(value.Id);
+                        writer.AppendValue(value.EventTime);
+                        writer.AppendValue(value.Amount);
+                        writer.AppendValue(value.Category);
+                        writer.AppendValue(value.Active);
+                    });
+            }
+        }
+
+        Command.CommandText = """
+                              SELECT id, event_time, amount, category, active
+                              FROM managedAppenderStackOnlyRows
+                              ORDER BY id
+                              """;
+        using var reader = Command.ExecuteReader();
+
+        reader.Read().Should().BeTrue();
+        reader.GetInt32(0).Should().Be(1);
+        reader.GetDateTime(1).Should().Be(DateTime.UnixEpoch.AddTicks(-10));
+        reader.GetDouble(2).Should().Be(12.5);
+        reader.GetString(3).Should().Be("alpha");
+        reader.GetBoolean(4).Should().BeTrue();
+
+        reader.Read().Should().BeTrue();
+        reader.GetInt32(0).Should().Be(2);
+        reader.GetDateTime(1).Should().Be(DateTime.UnixEpoch.AddTicks(10));
+        reader.IsDBNull(2).Should().BeTrue();
+        reader.IsDBNull(3).Should().BeTrue();
+        reader.IsDBNull(4).Should().BeTrue();
+
+        reader.Read().Should().BeTrue();
+        reader.GetInt32(0).Should().Be(3);
+        reader.GetDateTime(1).Should().Be(DateTime.UnixEpoch.AddDays(1));
+        reader.GetDouble(2).Should().Be(-3.25);
+        reader.GetString(3).Should().Be("gamma");
+        reader.GetBoolean(4).Should().BeFalse();
+        reader.Read().Should().BeFalse();
+    }
+
+    [Fact]
+    public void AppendRowScopedWritesAcrossChunkBoundary()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderStackOnlyChunks(id INTEGER, doubled BIGINT)";
+        Command.ExecuteNonQuery();
+
+        var rowCount = checked((int)DuckDBGlobalData.VectorSize + 3);
+        using (var appender = Connection.CreateAppender("managedAppenderStackOnlyChunks"))
+        {
+            for (var i = 0; i < rowCount; i++)
+            {
+                appender.AppendRowScoped(i,
+                    static (ref DuckDBAppenderRowWriter writer, int value) =>
+                    {
+                        writer.AppendValue(value);
+                        writer.AppendValue((long)value * 2);
+                    });
+            }
+        }
+
+        Command.CommandText = """
+                              SELECT count(*)::BIGINT, min(id), max(id), sum(doubled)::BIGINT
+                              FROM managedAppenderStackOnlyChunks
+                              """;
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetInt64(0).Should().Be(rowCount);
+        reader.GetInt32(1).Should().Be(0);
+        reader.GetInt32(2).Should().Be(rowCount - 1);
+        reader.GetInt64(3).Should().Be((long)(rowCount - 1) * rowCount);
+    }
+
+    [Fact]
+    public void AppendRowScopedPreparationFailureFaultsAppenderAtChunkBoundary()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderStackOnlyPreparationFailure(id INTEGER)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderStackOnlyPreparationFailure"))
+        {
+            for (var i = 0; i < checked((int)DuckDBGlobalData.VectorSize); i++)
+            {
+                appender.AppendRowScoped(i,
+                    static (ref DuckDBAppenderRowWriter writer, int value) =>
+                        writer.AppendValue((int?)value));
+            }
+
+            // Constraint checks are deferred until duckdb_appender_close, so close the native
+            // handle directly to deterministically exercise a failure in the next managed
+            // vector-boundary flush before CreateReusableRow can return a row.
+            var nativeAppenderField = typeof(DuckDB.NET.Data.DuckDBAppender).GetField(
+                "nativeAppender",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            nativeAppenderField.Should().NotBeNull();
+            var nativeAppender = nativeAppenderField!.GetValue(appender)
+                .Should().BeOfType<DuckDB.NET.Native.DuckDBAppender>().Subject;
+            nativeAppender.Close();
+
+            var failure = appender.Invoking(value => value.AppendRowScoped(2,
+                    static (ref DuckDBAppenderRowWriter writer, int state) =>
+                        writer.AppendValue((int?)state)))
+                .Should().Throw<AggregateException>().Which;
+
+            failure.InnerExceptions.Should().HaveCount(2)
+                .And.OnlyContain(exception => exception is ObjectDisposedException);
+
+            appender.Invoking(value => value.AppendRowScoped(3,
+                    static (ref DuckDBAppenderRowWriter writer, int state) =>
+                        writer.AppendValue((int?)state)))
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("*cannot be reused*");
+        }
+    }
+
+    [Fact]
+    public void IncompleteAppendRowScopedDiscardsFailedRowAndFaultsAppender()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderIncompleteStackOnlyRow(a INTEGER, b INTEGER)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderIncompleteStackOnlyRow"))
+        {
+            appender.Invoking(value => value.AppendRowScoped(1,
+                    static (ref DuckDBAppenderRowWriter writer, int state) => writer.AppendValue(state)))
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("*specified only 1 values");
+
+            appender.Invoking(value => value.AppendRowScoped((2, 3),
+                    static (ref DuckDBAppenderRowWriter writer, (int First, int Second) state) =>
+                    {
+                        writer.AppendValue(state.First);
+                        writer.AppendValue(state.Second);
+                    }))
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("*cannot be reused*");
+        }
+
+        Command.CommandText = "SELECT count(*) FROM managedAppenderIncompleteStackOnlyRow";
+        Command.ExecuteScalar().Should().Be(0);
+    }
+
+    [Fact]
+    public void AppendRowScopedFailureFlushesCompletedRowsAndFaultsAppender()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderThrownStackOnlyRow(a INTEGER, b VARCHAR)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderThrownStackOnlyRow"))
+        {
+            appender.AppendRowScoped((Id: 1, Name: "complete"),
+                static (ref DuckDBAppenderRowWriter writer, (int Id, string Name) value) =>
+                {
+                    writer.AppendValue(value.Id);
+                    writer.AppendValue(value.Name);
+                });
+
+            appender.Invoking(value => value.AppendRowScoped((Id: 2, Name: "discarded"),
+                    static (ref DuckDBAppenderRowWriter writer, (int Id, string Name) state) =>
+                    {
+                        writer.AppendValue(state.Id);
+                        writer.AppendValue(state.Name);
+                        throw new InvalidOperationException("callback failed");
+                    }))
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("callback failed");
+
+            appender.Invoking(value => value.AppendRowScoped((Id: 3, Name: "rejected"),
+                    static (ref DuckDBAppenderRowWriter writer, (int Id, string Name) state) =>
+                    {
+                        writer.AppendValue(state.Id);
+                        writer.AppendValue(state.Name);
+                    }))
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("*cannot be reused*");
+        }
+
+        Command.CommandText = "SELECT a, b FROM managedAppenderThrownStackOnlyRow";
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetInt32(0).Should().Be(1);
+        reader.GetString(1).Should().Be("complete");
+        reader.Read().Should().BeFalse();
+    }
+
+    [Fact]
     public void AppendRowActionOverloadWritesCompleteRow()
     {
         Command.CommandText = "CREATE TABLE managedAppenderActionRow(a INTEGER, b VARCHAR)";
@@ -1149,6 +1359,13 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
             Where(p => !string.IsNullOrWhiteSpace(p)).
             Select(p => '"' + p + '"')
         );
+
+    private readonly record struct ScopedMixedRow(
+        int Id,
+        DateTime EventTime,
+        double? Amount,
+        string Category,
+        bool? Active);
 
     private enum TestEnum1
     {
