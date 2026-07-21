@@ -201,9 +201,12 @@ internal class PreparedStatement : IDisposable
     {
         var duckDBType = NativeMethods.LogicalType.DuckDBGetTypeId(parameterLogicalType);
 
-        using var duckDBValue = parameter.Value.ToDuckDBValue(parameterLogicalType, duckDBType, parameter.DbType);
-
-        var result = NativeMethods.PreparedStatements.DuckDBBindValue(Statement, index, duckDBValue);
+        DuckDBState result;
+        if (!parameter.Value.TryBindScalarValue(Statement, index, duckDBType, parameter.DbType, out result))
+        {
+            using var duckDBValue = parameter.Value.ToDuckDBValue(parameterLogicalType, duckDBType, parameter.DbType);
+            result = NativeMethods.PreparedStatements.DuckDBBindValue(Statement, index, duckDBValue);
+        }
 
         if (!result.IsSuccess())
         {
