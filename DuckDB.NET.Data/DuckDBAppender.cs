@@ -8,7 +8,8 @@ namespace DuckDB.NET.Data;
 /// </summary>
 /// <remarks>
 /// Instances are not thread-safe. Do not call other methods on the same appender from an
-/// <see cref="AppendRow{TState}(TState, Action{IDuckDBAppenderRow, TState})"/> callback.
+/// <see cref="AppendRow{TState}(TState, Action{IDuckDBAppenderRow, TState})"/> or
+/// <see cref="AppendRowScoped{TState}(TState, DuckDBAppenderRowWriterAction{TState})"/> callback.
 /// </remarks>
 public class DuckDBAppender : IDisposable
 {
@@ -109,21 +110,46 @@ public class DuckDBAppender : IDisposable
         }
         catch (Exception appendException)
         {
-            if (row is not null)
-            {
-                try
-                {
-                    FinalizeFailedAppendRow(row);
-                }
-                catch (Exception finalizationException)
-                {
-                    throw new AggregateException(
-                        "Appending the row failed and the previously completed rows could not be finalized",
-                        appendException,
-                        finalizationException);
-                }
-            }
+            FinalizeFailedAppendRowOrThrow(row, appendException);
+            throw;
+        }
+        finally
+        {
+            isAppendingRow = false;
+        }
+    }
 
+    /// <summary>
+    /// Appends a complete row through a stack-only writer that cannot escape the callback.
+    /// </summary>
+    /// <typeparam name="TState">The type of value used to populate the row.</typeparam>
+    /// <param name="state">The value used to populate the row.</param>
+    /// <param name="writeRow">A callback that appends every column value. This method validates
+    /// and completes the row after the callback returns.</param>
+    /// <remarks>
+    /// The callback must not call other methods on this appender. If the callback or automatic
+    /// row completion fails, all previously completed rows are flushed, the failed row is
+    /// discarded, and the appender cannot be reused. Use a static or cached callback for an
+    /// allocation-free per-row path; a capturing callback can allocate.
+    /// </remarks>
+    public void AppendRowScoped<TState>(TState state, DuckDBAppenderRowWriterAction<TState> writeRow)
+    {
+        ArgumentNullException.ThrowIfNull(writeRow);
+        EnsureUsable();
+
+        DuckDBAppenderRow? row = null;
+        isAppendingRow = true;
+
+        try
+        {
+            row = CreateReusableRow();
+            var writer = new DuckDBAppenderRowWriter(row);
+            writeRow(ref writer, state);
+            row.EndRow();
+        }
+        catch (Exception appendException)
+        {
+            FinalizeFailedAppendRowOrThrow(row, appendException);
             throw;
         }
         finally
@@ -158,9 +184,12 @@ public class DuckDBAppender : IDisposable
         {
             AppendDataChunk();
 
-            InitVectorWriters();
-
+            // AppendDataChunk resets the chunk. Update the managed count before recreating the
+            // writers so a writer-initialization failure cannot make CloseCore append the already
+            // completed chunk a second time.
             rowCount = 0;
+
+            InitVectorWriters();
         }
 
         rowCount++;
@@ -262,14 +291,40 @@ public class DuckDBAppender : IDisposable
         NativeMethods.DataChunks.DuckDBDataChunkReset(dataChunk);
     }
 
-    private void FinalizeFailedAppendRow(DuckDBAppenderRow row)
+    private void FinalizeFailedAppendRow(DuckDBAppenderRow? row)
     {
-        // The row index is also the number of completed rows before the failed row in this chunk.
-        rowCount = row.ChunkRowIndex;
-        row.Invalidate();
         isFaulted = true;
 
+        if (row is null)
+        {
+            // Row preparation failed while flushing or recreating the current chunk. Discard any
+            // uncommitted managed rows by closing the chunk at size zero so the appender cannot be
+            // reused in a partially transitioned state.
+            rowCount = 0;
+        }
+        else
+        {
+            // The row index is also the number of completed rows before the failed row in this chunk.
+            rowCount = row.ChunkRowIndex;
+            row.Invalidate();
+        }
+
         CloseCore();
+    }
+
+    private void FinalizeFailedAppendRowOrThrow(DuckDBAppenderRow? row, Exception appendException)
+    {
+        try
+        {
+            FinalizeFailedAppendRow(row);
+        }
+        catch (Exception finalizationException)
+        {
+            throw new AggregateException(
+                "Appending the row failed and the previously completed rows could not be finalized",
+                appendException,
+                finalizationException);
+        }
     }
 
     private void EnsureNotAppendingRow()
