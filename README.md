@@ -1,26 +1,28 @@
-# DuckDB.NET
+# DuckDB.NET fork preview
 
-[DuckDB](https://duckdb.org/) bindings for C#
+This is the [`skuirrels/DuckDB.NET`](https://github.com/skuirrels/DuckDB.NET)
+fork of the [upstream DuckDB.NET project](https://github.com/Giorgi/DuckDB.NET).
+It provides preview packages containing the consolidated performance work while
+the corresponding upstream pull requests are reviewed and released.
 
-[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/Giorgi/DuckDB.NET/ci.yml?branch=main&logo=GitHub&style=for-the-badge)](https://github.com/Giorgi/DuckDB.NET/actions/workflows/ci.yml)
-[![Coveralls](https://img.shields.io/coveralls/github/Giorgi/DuckDB.NET?logo=coveralls&style=for-the-badge)](https://coveralls.io/github/Giorgi/DuckDB.NET)
+[![Preview release](https://img.shields.io/github/actions/workflow/status/skuirrels/DuckDB.NET/preview-release.yml?branch=develop&label=preview%20release&logo=GitHub&style=for-the-badge)](https://github.com/skuirrels/DuckDB.NET/actions/workflows/preview-release.yml)
 [![License](https://img.shields.io/badge/License-Mit-blue.svg?style=for-the-badge&logo=mit)](LICENSE.md)
-[![Ko-Fi](https://img.shields.io/static/v1?style=for-the-badge&message=Support%20the%20Project&color=success&logo=ko-fi&label=$$)](https://ko-fi.com/U6U81LHU8)
 [![Discord](https://img.shields.io/badge/DuckDB-.Net-%23FFF000?logo=DuckDB&style=for-the-badge)](https://discord.com/channels/909674491309850675/1051088721996427265)
 
-[![NuGet DuckDB.NET.Data](https://img.shields.io/nuget/dt/DuckDB.NET.Data.svg?label=DuckDB.NET.Data&style=for-the-badge&logo=NuGet)](https://www.nuget.org/packages/DuckDB.NET.Data/)
-[![NuGet DuckDB.NET.Bindings](https://img.shields.io/nuget/dt/DuckDB.NET.Bindings.svg?label=DuckDB.NET.Bindings&style=for-the-badge&logo=NuGet)](https://www.nuget.org/packages/DuckDB.NET.Bindings/)
+[![NuGet Skuirrels.DuckDB.NET.Data.Full](https://img.shields.io/nuget/vpre/Skuirrels.DuckDB.NET.Data.Full.svg?label=Skuirrels.DuckDB.NET.Data.Full&style=for-the-badge&logo=NuGet)](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Data.Full/)
+[![NuGet Skuirrels.DuckDB.NET.Bindings.Full](https://img.shields.io/nuget/vpre/Skuirrels.DuckDB.NET.Bindings.Full.svg?label=Skuirrels.DuckDB.NET.Bindings.Full&style=for-the-badge&logo=NuGet)](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Bindings.Full/)
 
-[![NuGet DuckDB.NET.Data.Full](https://img.shields.io/nuget/dt/DuckDB.NET.Data.Full.svg?label=DuckDB.NET.Data.Full&style=for-the-badge&logo=NuGet)](https://www.nuget.org/packages/DuckDB.NET.Data.Full/)
-[![NuGet DuckDB.NET.Bindings.Full](https://img.shields.io/nuget/dt/DuckDB.NET.Bindings.Full.svg?label=DuckDB.NET.Bindings.Full&style=for-the-badge&logo=NuGet)](https://www.nuget.org/packages/DuckDB.NET.Bindings.Full/)
-
-![Project Icon](https://raw.githubusercontent.com/Giorgi/DuckDB.NET/main/Logo.jpg "DuckDB.NET Project Icon")
+![Project Icon](Logo.jpg "DuckDB.NET Project Icon")
 
 ## Usage
 
 ```sh
-dotnet add package DuckDB.NET.Data.Full
+dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.4-preview.1
 ```
+
+The fork packages retain the official `DuckDB.NET.Data` namespaces and assembly
+names. Do not reference this package and the official `DuckDB.NET.Data.Full`
+package in the same dependency graph.
 
 ```cs
 using (var duckDBConnection = new DuckDBConnection("Data Source=file.db"))
@@ -91,9 +93,11 @@ Documentation is available at [https://duckdb.net](https://duckdb.net)
 
 ## Support
 
-If you encounter a bug with the library [Create an Issue](https://github.com/Giorgi/DuckDB.NET/issues/new). Join the [DuckDB `dotnet` channel](https://discord.duckdb.org/) for DuckDB.NET-related topics.
+For a fork-specific problem, [create an issue in this fork](https://github.com/skuirrels/DuckDB.NET/issues/new).
+For upstream DuckDB.NET support, use the [upstream issue tracker](https://github.com/Giorgi/DuckDB.NET/issues/new).
+You can also join the [DuckDB `dotnet` channel](https://discord.duckdb.org/) for DuckDB.NET-related topics.
 
-## Contributors
+## Upstream contributors
 
 [![Contributors](https://contrib.rocks/image?repo=Giorgi/DuckDB.NET)](https://github.com/Giorgi/DuckDB.NET/graphs/contributors)
 

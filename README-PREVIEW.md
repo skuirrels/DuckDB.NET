@@ -11,6 +11,11 @@ Install the bundled provider explicitly:
 dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.4-preview.1
 ```
 
+NuGet packages:
+
+- [`Skuirrels.DuckDB.NET.Data.Full`](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Data.Full/)
+- [`Skuirrels.DuckDB.NET.Bindings.Full`](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Bindings.Full/)
+
 The package keeps the official `DuckDB.NET.Data` namespaces and assembly names,
 so application source code does not need to change. Do not reference this fork
 package and the official `DuckDB.NET.Data.Full` package in the same dependency
@@ -23,3 +28,6 @@ move back to the official `DuckDB.NET.Data.Full` package.
 
 The original DuckDB.NET and DuckDB licences and attribution are included in the
 package.
+
+Report fork-specific problems in the
+[`skuirrels/DuckDB.NET` issue tracker](https://github.com/skuirrels/DuckDB.NET/issues/new).
