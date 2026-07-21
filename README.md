@@ -2,7 +2,7 @@
 
 This is the [`skuirrels/DuckDB.NET`](https://github.com/skuirrels/DuckDB.NET)
 fork of the [upstream DuckDB.NET project](https://github.com/Giorgi/DuckDB.NET).
-It provides preview packages containing the consolidated performance work while
+It provides preview packages containing the cutting-edge performance work while
 the corresponding upstream pull requests are reviewed and released.
 
 [![NuGet (Data)](https://img.shields.io/nuget/vpre/Skuirrels.DuckDB.NET.Data.Full.svg?label=NuGet%20%28Data%29)](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Data.Full)
