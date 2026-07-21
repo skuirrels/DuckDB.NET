@@ -18,8 +18,10 @@ var config = DefaultConfig.Instance
 
 var benchmarkTypes = new List<Type>
 {
+#if !DUCKDB_NET_BASELINE_1_5_3
     typeof(AppenderBenchmark),
     typeof(MappedAppenderBenchmark),
+#endif
     typeof(PreparedCommandBenchmark),
     typeof(PreparedCommandSetupBenchmark),
     typeof(AnalyticalQueryBenchmark),
@@ -28,7 +30,7 @@ var benchmarkTypes = new List<Type>
     typeof(TpchBenchmark),
 };
 
-#if DUCKDB_EFCORE_PROVIDER_1_9_0
+#if DUCKDB_EFCORE_PROVIDER_1_13_0
 benchmarkTypes.Add(typeof(EfCoreProviderBulkIngestionBenchmark));
 #endif
 

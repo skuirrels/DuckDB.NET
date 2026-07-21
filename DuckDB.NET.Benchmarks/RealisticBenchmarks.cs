@@ -149,13 +149,40 @@ public class BulkIngestionBenchmark
                     .AppendValue(row.EventTime)
                     .AppendValue(row.Amount)
                     .AppendValue(row.Category)
-                    .AppendValue(row.IsActive);
+                    .AppendValue(row.IsActive)
+                    .EndRow();
             }
         }
 
         transaction.Rollback();
         return rows.Length;
     }
+
+#if !DUCKDB_NET_BASELINE_1_5_3
+    [Benchmark(OperationsPerInvoke = RealisticWorkload.IngestRowCount)]
+    public int InsertWithScopedAppenderInTransaction()
+    {
+        using var transaction = connection.BeginTransaction();
+
+        using (var appender = connection.CreateAppender("benchmark_ingest"))
+        {
+            foreach (var row in rows)
+            {
+                appender.AppendRowScoped(row, static (ref DuckDBAppenderRowWriter writer, IngestRow value) =>
+                {
+                    writer.AppendValue(value.Id);
+                    writer.AppendValue(value.EventTime);
+                    writer.AppendValue(value.Amount);
+                    writer.AppendValue(value.Category);
+                    writer.AppendValue(value.IsActive);
+                });
+            }
+        }
+
+        transaction.Rollback();
+        return rows.Length;
+    }
+#endif
 }
 
 [MemoryDiagnoser]

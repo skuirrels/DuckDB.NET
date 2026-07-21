@@ -23,8 +23,8 @@ unset JAVA_WARMUP_ITERATIONS JAVA_MEASUREMENT_ITERATIONS JAVA_ITERATION_TIME
 unset GOMODCACHE GOCACHE
 
 mkdir -p "${ARTIFACTS_ROOT}/dotnet-1.5.3"
-mkdir -p "${ARTIFACTS_ROOT}/dotnet-efcore-1.9.0"
-mkdir -p "${ARTIFACTS_ROOT}/dotnet-local-1.5.4"
+mkdir -p "${ARTIFACTS_ROOT}/dotnet-efcore-1.13.0"
+mkdir -p "${ARTIFACTS_ROOT}/dotnet-fork-1.5.4"
 mkdir -p "${ARTIFACTS_ROOT}/java"
 
 {
@@ -34,8 +34,8 @@ mkdir -p "${ARTIFACTS_ROOT}/java"
   java -version 2>&1
   mvn -version
   echo "DuckDB.NET package baseline: 1.5.3"
-  echo "DuckDB.EFCoreProvider package: 1.9.0 (depends on DuckDB.NET.Data.Full 1.5.3)"
-  echo "DuckDB.NET local tuned engine: 1.5.4"
+  echo "DuckDB.EFCoreProvider package: 1.13.0 (depends on DuckDB.NET.Data.Full 1.5.3)"
+  echo "DuckDB.NET source lane: consolidated fork 1.5.4"
   echo "duckdb-go: v2.10504.0 (DuckDB 1.5.4)"
   echo "DuckDB JDBC: org.duckdb:duckdb_jdbc:1.5.4.0 (DuckDB 1.5.4)"
   echo "DuckDB threads per connection: 1"
@@ -59,7 +59,7 @@ if [[ "${SKIP_RELEASE_BUILD}" != "1" && "${SKIP_RELEASE_BUILD}" != "true" ]]; th
     --nologo
 
   dotnet build \
-    "${PROJECT_ROOT}/DuckDB.EFCoreProvider.1_9_0.Benchmarks/DuckDB.EFCoreProvider.1_9_0.Benchmarks.csproj" \
+    "${PROJECT_ROOT}/DuckDB.EFCoreProvider.1_13_0.Benchmarks/DuckDB.EFCoreProvider.1_13_0.Benchmarks.csproj" \
     --configuration Release \
     --disable-build-servers \
     --nologo
@@ -83,10 +83,10 @@ dotnet run \
 dotnet run \
   --no-build \
   --configuration Release \
-  --project "${PROJECT_ROOT}/DuckDB.EFCoreProvider.1_9_0.Benchmarks/DuckDB.EFCoreProvider.1_9_0.Benchmarks.csproj" \
+  --project "${PROJECT_ROOT}/DuckDB.EFCoreProvider.1_13_0.Benchmarks/DuckDB.EFCoreProvider.1_13_0.Benchmarks.csproj" \
   -- \
   --filter '*' \
-  --artifacts "${ARTIFACTS_ROOT}/dotnet-efcore-1.9.0"
+  --artifacts "${ARTIFACTS_ROOT}/dotnet-efcore-1.13.0"
 
 dotnet run \
   --no-build \
@@ -94,7 +94,7 @@ dotnet run \
   --project "${PROJECT_ROOT}/DuckDB.NET.Benchmarks/Benchmarks.csproj" \
   -- \
   --filter '*' \
-  --artifacts "${ARTIFACTS_ROOT}/dotnet-local-1.5.4"
+  --artifacts "${ARTIFACTS_ROOT}/dotnet-fork-1.5.4"
 
 (
   cd "${PROJECT_ROOT}/DuckDB.Go.Benchmarks"

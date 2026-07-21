@@ -6,14 +6,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
-    <AssemblyName>DuckDB.EFCoreProvider.1_9_0.Benchmarks</AssemblyName>
+    <AssemblyName>DuckDB.EFCoreProvider.1_13_0.Benchmarks</AssemblyName>
     <RootNamespace>DuckDB.NET.Benchmarks</RootNamespace>
-    <DefineConstants>$(DefineConstants);DUCKDB_NET_BASELINE_1_5_3;DUCKDB_EFCORE_PROVIDER_1_9_0</DefineConstants>
+    <DefineConstants>$(DefineConstants);DUCKDB_NET_BASELINE_1_5_3;DUCKDB_EFCORE_PROVIDER_1_13_0</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.4" />
-    <PackageReference Include="DuckDB.EFCoreProvider" Version="1.9.0" />
+    <PackageReference Include="DuckDB.EFCoreProvider" Version="1.13.0" />
   </ItemGroup>
 
   <ItemGroup>

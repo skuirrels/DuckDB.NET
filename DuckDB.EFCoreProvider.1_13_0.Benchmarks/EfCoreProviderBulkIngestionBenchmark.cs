@@ -68,10 +68,10 @@ public class EfCoreProviderBulkIngestionBenchmark
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
             ?.InformationalVersion;
 
-        if (version is null || !version.StartsWith("1.9.0", StringComparison.Ordinal))
+        if (version is null || !version.StartsWith("1.13.0", StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                $"The provider comparison requires DuckDB.EFCoreProvider 1.9.0, but loaded {version ?? "an unknown version"}.");
+                $"The provider comparison requires DuckDB.EFCoreProvider 1.13.0, but loaded {version ?? "an unknown version"}.");
         }
     }
 }
