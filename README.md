@@ -10,8 +10,6 @@ the corresponding upstream pull requests are reviewed and released.
 [![.NET 8 and 10](https://img.shields.io/badge/.NET-8%20%7C%2010-512BD4)](https://dotnet.microsoft.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
-![Project Icon](Logo.jpg "DuckDB.NET Project Icon")
-
 ## Usage
 
 ```sh
