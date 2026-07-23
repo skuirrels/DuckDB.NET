@@ -19,13 +19,15 @@
     <Company>Giorgi Dalakishvili</Company>
     <Copyright>Copyright © 2020 - $(Year) Giorgi Dalakishvili</Copyright>
 
-    <ForkPackagePrefix Condition="'$(ForkPreview)' == 'true' AND '$(ForkPackagePrefix)' == ''">Skuirrels.</ForkPackagePrefix>
+    <ForkPackageBuild Condition="'$(ForkPreview)' == 'true' OR '$(ForkRelease)' == 'true'">true</ForkPackageBuild>
+    <ForkPackagePrefix Condition="'$(ForkPackageBuild)' == 'true' AND '$(ForkPackagePrefix)' == ''">Skuirrels.</ForkPackagePrefix>
     <Product>DuckDB.NET.$(MSBuildProjectName)</Product>
     <PackageId>$(ForkPackagePrefix)DuckDB.NET.$(MSBuildProjectName)</PackageId>
     <PackageTags>DuckDB;ADO.NET;Database;Olap;Embedded</PackageTags>
     <PackageIcon>Logo.jpg</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageReadmeFile Condition="'$(ForkPreview)' == 'true'">README-PREVIEW.md</PackageReadmeFile>
+    <PackageReadmeFile Condition="'$(ForkRelease)' == 'true'">README-FORK.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
 
     <Deterministic>true</Deterministic>
@@ -40,7 +42,7 @@
 
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(ForkPreview)' == 'true'">
+  <PropertyGroup Condition="'$(ForkPackageBuild)' == 'true'">
     <RepositoryUrl>https://github.com/skuirrels/DuckDB.NET</RepositoryUrl>
     <PackageProjectUrl>https://github.com/skuirrels/DuckDB.NET</PackageProjectUrl>
   </PropertyGroup>
@@ -74,13 +76,21 @@
       <Pack>True</Pack>
       <PackagePath></PackagePath>
     </None>
+    <None Include="..\README-FORK.md" Condition="'$(ForkRelease)' == 'true'">
+      <Pack>True</Pack>
+      <PackagePath></PackagePath>
+    </None>
   </ItemGroup>
 
-  <Target Name="ValidateForkPreviewPackageMetadata" BeforeTargets="Pack" Condition="'$(ForkPreview)' == 'true'">
+  <Target Name="ValidateForkPackageMetadata" BeforeTargets="Pack" Condition="'$(ForkPackageBuild)' == 'true'">
+    <Error Condition="'$(ForkPreview)' == 'true' AND '$(ForkRelease)' == 'true'"
+           Text="ForkPreview and ForkRelease cannot both be enabled." />
     <Error Condition="$([System.String]::Copy('$(PackageId)').StartsWith('Skuirrels.')) != 'True'"
-           Text="Fork preview packages must use the Skuirrels package prefix." />
-    <Error Condition="$([System.String]::Copy('$(PackageVersion)').Contains('-preview.')) != 'True'"
+           Text="Fork packages must use the Skuirrels package prefix." />
+    <Error Condition="'$(ForkPreview)' == 'true' AND $([System.String]::Copy('$(PackageVersion)').Contains('-preview.')) != 'True'"
            Text="Fork preview package versions must contain the -preview. prerelease suffix." />
+    <Error Condition="'$(ForkRelease)' == 'true' AND $([System.String]::Copy('$(PackageVersion)').Contains('-')) == 'True'"
+           Text="Stable fork package versions must not contain a prerelease suffix." />
   </Target>
 
   <PropertyGroup Label="CI" Condition="'$(CI)' == ''">
