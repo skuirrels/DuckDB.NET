@@ -13,6 +13,8 @@ Fixes:
     </PackageReleaseNotes>
     <Description Condition="'$(ForkPreview)' == 'true'">Unofficial preview build of the DuckDB ADO.NET provider from the skuirrels DuckDB.NET fork.</Description>
     <PackageReleaseNotes Condition="'$(ForkPreview)' == 'true'">Unofficial preview of the consolidated DuckDB.NET performance work for DuckDB v1.5.4. Do not reference this package alongside the official DuckDB.NET packages.</PackageReleaseNotes>
+    <Description Condition="'$(ForkRelease)' == 'true'">Unofficial stable build of the DuckDB ADO.NET provider from the skuirrels DuckDB.NET fork.</Description>
+    <PackageReleaseNotes Condition="'$(ForkRelease)' == 'true'">Stable fork release of the consolidated DuckDB.NET performance work for DuckDB v1.5.4. Do not reference this package alongside the official DuckDB.NET packages.</PackageReleaseNotes>
     <SignAssembly>True</SignAssembly>
     <AssemblyOriginatorKeyFile>..\keyPair.snk</AssemblyOriginatorKeyFile>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -40,11 +42,11 @@ Fixes:
     <PackageReference Include="Apache.Arrow" Version="23.0.0" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(PreviewPack)' != 'true'">
+  <ItemGroup Condition="'$(ForkPack)' != 'true'">
     <ProjectReference Include="..\DuckDB.NET.Bindings\Bindings.csproj" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(ForkPreview)' == 'true' AND '$(PreviewPack)' == 'true'">
+  <ItemGroup Condition="'$(ForkPackageBuild)' == 'true' AND '$(ForkPack)' == 'true'">
     <PackageReference Include="$(ForkPackagePrefix)DuckDB.NET.Bindings.Full" Version="$(PackageVersion)" />
   </ItemGroup>
 
