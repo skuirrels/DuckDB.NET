@@ -1,3 +1,5 @@
+using System.Linq.Expressions;
+
 namespace DuckDB.NET.Data.Mapping;
 
 /// <summary>
@@ -69,6 +71,7 @@ internal interface IPropertyMapping<T>
     Type PropertyType { get; }
     PropertyMappingType MappingType { get; }
     void AppendToRow(IDuckDBAppenderRow row, T record);
+    Expression BuildWriteExpression(ParameterExpression row, ParameterExpression record);
 }
 
 internal sealed class PropertyMapping<T, TProperty> : IPropertyMapping<T>
@@ -119,6 +122,12 @@ internal sealed class PropertyMapping<T, TProperty> : IPropertyMapping<T>
             _ => throw new NotSupportedException($"Type {typeof(TProperty).Name} is not supported for appending")
         };
     }
+
+    public Expression BuildWriteExpression(ParameterExpression row, ParameterExpression record)
+    {
+        var value = Expression.Invoke(Expression.Constant(Getter), record);
+        return DuckDBAppenderMapCompiler.CreateAppendExpression(row, value, typeof(TProperty));
+    }
 }
 
 internal sealed class DefaultValueMapping<T> : IPropertyMapping<T>
@@ -130,6 +139,9 @@ internal sealed class DefaultValueMapping<T> : IPropertyMapping<T>
     {
         row.AppendDefault();
     }
+
+    public Expression BuildWriteExpression(ParameterExpression row, ParameterExpression record)
+        => Expression.Call(row, nameof(IDuckDBAppenderRow.AppendDefault), Type.EmptyTypes);
 }
 
 internal sealed class NullValueMapping<T> : IPropertyMapping<T>
@@ -140,5 +152,92 @@ internal sealed class NullValueMapping<T> : IPropertyMapping<T>
     public void AppendToRow(IDuckDBAppenderRow row, T record)
     {
         row.AppendNullValue();
+    }
+
+    public Expression BuildWriteExpression(ParameterExpression row, ParameterExpression record)
+        => Expression.Call(row, nameof(IDuckDBAppenderRow.AppendNullValue), Type.EmptyTypes);
+}
+
+internal static class DuckDBAppenderMapCompiler
+{
+    private static readonly HashSet<Type> SupportedValueTypes =
+    [
+        typeof(bool),
+        typeof(sbyte),
+        typeof(short),
+        typeof(int),
+        typeof(long),
+        typeof(byte),
+        typeof(ushort),
+        typeof(uint),
+        typeof(ulong),
+        typeof(float),
+        typeof(double),
+        typeof(decimal),
+        typeof(DateTime),
+        typeof(DateTimeOffset),
+        typeof(TimeSpan),
+        typeof(Guid),
+        typeof(BigInteger),
+        typeof(DuckDBDateOnly),
+        typeof(DuckDBTimeOnly),
+        typeof(DateOnly),
+        typeof(TimeOnly)
+    ];
+
+    public static Action<IDuckDBAppenderRow, T> Compile<T>(IReadOnlyList<IPropertyMapping<T>> mappings)
+    {
+        var row = Expression.Parameter(typeof(IDuckDBAppenderRow), "row");
+        var record = Expression.Parameter(typeof(T), "record");
+        var writes = new List<Expression>(mappings.Count + 1);
+
+        for (var index = 0; index < mappings.Count; index++)
+        {
+            writes.Add(mappings[index].BuildWriteExpression(row, record));
+        }
+
+        // IDuckDBAppenderRow methods return the row to support fluent callers. The mapped
+        // callback is an Action, so force the compiled block's result type to void.
+        writes.Add(Expression.Empty());
+
+        return Expression.Lambda<Action<IDuckDBAppenderRow, T>>(
+            Expression.Block(writes),
+            row,
+            record).Compile();
+    }
+
+    internal static Expression CreateAppendExpression(
+        ParameterExpression row,
+        Expression value,
+        Type propertyType)
+    {
+        if (propertyType == typeof(string) || propertyType == typeof(byte[]))
+        {
+            return Expression.Call(
+                row,
+                nameof(IDuckDBAppenderRow.AppendValue),
+                Type.EmptyTypes,
+                value);
+        }
+
+        var underlyingType = Nullable.GetUnderlyingType(propertyType);
+        var valueType = underlyingType ?? propertyType;
+
+        if (!SupportedValueTypes.Contains(valueType) && !valueType.IsEnum)
+        {
+            throw new NotSupportedException($"Type {propertyType.Name} is not supported for appending");
+        }
+
+        var nullableType = typeof(Nullable<>).MakeGenericType(valueType);
+        var nullableValue = propertyType == nullableType
+            ? value
+            : Expression.Convert(value, nullableType);
+        var genericArguments = valueType.IsEnum ? [valueType] : Type.EmptyTypes;
+
+        return Expression.Call(
+            row,
+            nameof(IDuckDBAppenderRow.AppendValue),
+            genericArguments,
+            nullableValue);
     }
 }

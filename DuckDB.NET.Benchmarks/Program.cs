@@ -14,12 +14,15 @@ var config = DefaultConfig.Instance
             .WithToolchain(InProcessEmitToolchain.Instance)
             .WithLaunchCount(1)
             .WithWarmupCount(5)
-            .WithIterationCount(10));
+            .WithIterationCount(10)
+            .WithInvocationCount(1)
+            .WithUnrollFactor(1));
 
 var benchmarkTypes = new List<Type>
 {
 #if !DUCKDB_NET_BASELINE_1_5_3
     typeof(AppenderBenchmark),
+    typeof(ListAppenderBenchmark),
     typeof(MappedAppenderBenchmark),
 #endif
     typeof(PreparedCommandBenchmark),

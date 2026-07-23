@@ -36,6 +36,52 @@ public class DuckDBCommandTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db)
     }
 
     [Fact]
+    public void TypedPreparedParameterCanBeExecutedRepeatedly()
+    {
+        using var command = Connection.CreateCommand();
+        command.CommandText = "SELECT $value::INTEGER";
+        var parameter = new DuckDBParameter<int>("value", 10);
+        command.Parameters.Add(parameter);
+        command.Prepare();
+
+        command.ExecuteScalar().Should().Be(10);
+
+        parameter.TypedValue = 20;
+        command.ExecuteScalar().Should().Be(20);
+
+        parameter.Value = 30;
+        command.ExecuteScalar().Should().Be(30);
+    }
+
+    [Fact]
+    public void TypedParameterRejectsValuesOfAnotherType()
+    {
+        DuckDBParameter parameter = new DuckDBParameter<int>("value", 10);
+
+        parameter.Invoking(value => value.Value = "wrong")
+            .Should().Throw<InvalidCastException>();
+    }
+
+    [Fact]
+    public void PreparedBindingPlanInvalidatesWhenParameterNameChanges()
+    {
+        using var command = Connection.CreateCommand();
+        command.CommandText = "SELECT $value::INTEGER";
+        var parameter = new DuckDBParameter<int>("value", 10);
+        command.Parameters.Add(parameter);
+        command.Prepare();
+
+        command.ExecuteScalar().Should().Be(10);
+
+        parameter.ParameterName = "unused";
+        command.Invoking(value => value.ExecuteScalar()).Should().Throw<DuckDBException>();
+
+        parameter.ParameterName = "value";
+        parameter.TypedValue = 20;
+        command.ExecuteScalar().Should().Be(20);
+    }
+
+    [Fact]
     public void PreparedCommandClearsBindingsBeforeReuse()
     {
         using var command = Connection.CreateCommand();

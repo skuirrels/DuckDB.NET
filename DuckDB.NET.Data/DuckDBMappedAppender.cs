@@ -1,4 +1,5 @@
 using DuckDB.NET.Data.Mapping;
+using System.Threading;
 
 namespace DuckDB.NET.Data;
 
@@ -9,16 +10,18 @@ namespace DuckDB.NET.Data;
 /// <typeparam name="TMap">The AppenderMap type defining the mappings</typeparam>
 public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppenderMap<T>, new()
 {
+    private static readonly Lazy<CompiledAppenderMap> CompiledMap =
+        new(CreateCompiledMap, LazyThreadSafetyMode.ExecutionAndPublication);
+
     private readonly DuckDBAppender appender;
-    private readonly List<IPropertyMapping<T>> mappings;
+    private readonly Action<IDuckDBAppenderRow, T> writeRecord;
 
     internal DuckDBMappedAppender(DuckDBAppender appender)
     {
         this.appender = appender;
-        var classMap = new TMap();
-
-        // Get mappings as List<T> to avoid interface enumerator boxing
-        mappings = classMap.PropertyMappings;
+        var compiledMap = CompiledMap.Value;
+        var mappings = compiledMap.Mappings;
+        writeRecord = compiledMap.WriteRecord;
 
         // Validate mappings match the table structure
         if (mappings.Count == 0)
@@ -50,6 +53,7 @@ public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppe
                     $"Type mismatch at column index {index}: Mapped type is {mapping.PropertyType.Name} (expected DuckDB type: {expectedType}) but actual column type is {columnType}");
             }
         }
+
     }
 
     /// <summary>
@@ -76,14 +80,7 @@ public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppe
             throw new ArgumentNullException(nameof(record));
         }
 
-        // Pass both values as state so the callback does not capture per record.
-        appender.AppendRow((Record: record, Mappings: mappings), static (row, state) =>
-        {
-            foreach (var mapping in state.Mappings)
-            {
-                mapping.AppendToRow(row, state.Record);
-            }
-        });
+        appender.AppendRow(record, writeRecord);
     }
 
     private static DuckDBType GetExpectedDuckDBType(Type type)
@@ -96,6 +93,16 @@ public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppe
             _ => duckDBType
         };
     }
+
+    private static CompiledAppenderMap CreateCompiledMap()
+    {
+        var mappings = new TMap().PropertyMappings;
+        return new CompiledAppenderMap(mappings, DuckDBAppenderMapCompiler.Compile(mappings));
+    }
+
+    private sealed record CompiledAppenderMap(
+        IReadOnlyList<IPropertyMapping<T>> Mappings,
+        Action<IDuckDBAppenderRow, T> WriteRecord);
 
     /// <summary>
     /// Closes the appender and flushes any remaining data.

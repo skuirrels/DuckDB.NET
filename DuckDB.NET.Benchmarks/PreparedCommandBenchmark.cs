@@ -8,9 +8,11 @@ public class PreparedCommandBenchmark
 {
     private DuckDBConnection connection = null!;
     private DuckDBCommand unpreparedCommand = null!;
+    private DuckDBCommand boxedPreparedCommand = null!;
     private DuckDBCommand preparedCommand = null!;
     private DuckDBParameter unpreparedParameter = null!;
-    private DuckDBParameter preparedParameter = null!;
+    private DuckDBParameter boxedPreparedParameter = null!;
+    private DuckDBParameter<int> preparedParameter = null!;
     private int nextValue;
 
     [GlobalSetup]
@@ -20,7 +22,9 @@ public class PreparedCommandBenchmark
         connection.Open();
 
         unpreparedCommand = CreateCommand(out unpreparedParameter);
-        preparedCommand = CreateCommand(out preparedParameter);
+        boxedPreparedCommand = CreateCommand(out boxedPreparedParameter);
+        boxedPreparedCommand.Prepare();
+        preparedCommand = CreateTypedCommand(out preparedParameter);
         preparedCommand.Prepare();
     }
 
@@ -28,6 +32,7 @@ public class PreparedCommandBenchmark
     public void Cleanup()
     {
         preparedCommand.Dispose();
+        boxedPreparedCommand.Dispose();
         unpreparedCommand.Dispose();
         connection.Dispose();
     }
@@ -40,9 +45,16 @@ public class PreparedCommandBenchmark
     }
 
     [Benchmark]
+    public int ExecutePreparedBoxed()
+    {
+        boxedPreparedParameter.Value = nextValue++;
+        return (int)boxedPreparedCommand.ExecuteScalar()!;
+    }
+
+    [Benchmark]
     public int ExecutePrepared()
     {
-        preparedParameter.Value = nextValue++;
+        preparedParameter.TypedValue = nextValue++;
         return (int)preparedCommand.ExecuteScalar()!;
     }
 
@@ -54,6 +66,17 @@ public class PreparedCommandBenchmark
         command.Parameters.Add(changingParameter);
         command.Parameters.Add(new DuckDBParameter("second", 2));
         command.Parameters.Add(new DuckDBParameter("third", 3));
+        return command;
+    }
+
+    private DuckDBCommand CreateTypedCommand(out DuckDBParameter<int> changingParameter)
+    {
+        var command = connection.CreateCommand();
+        command.CommandText = "SELECT $first::INTEGER + $second::INTEGER + $third::INTEGER";
+        changingParameter = new DuckDBParameter<int>("first", 1);
+        command.Parameters.Add(changingParameter);
+        command.Parameters.Add(new DuckDBParameter<int>("second", 2));
+        command.Parameters.Add(new DuckDBParameter<int>("third", 3));
         return command;
     }
 }

@@ -1,13 +1,27 @@
 ﻿using DuckDB.NET.Data.Common;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace DuckDB.NET.Data.DataChunk.Writer;
 
 internal sealed unsafe class ListVectorDataWriter : VectorDataWriterBase
 {
+    private delegate void CollectionWriter(ListVectorDataWriter writer, ICollection collection, ulong startIndex);
+
+    private static readonly ConditionalWeakTable<Type, CollectionWriterPlan> CollectionWriterCache = new();
+    private static readonly MethodInfo WriteArrayMethod =
+        typeof(ListVectorDataWriter).GetMethod(nameof(WriteArray), BindingFlags.Static | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo WriteListMethod =
+        typeof(ListVectorDataWriter).GetMethod(nameof(WriteList), BindingFlags.Static | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo WriteEnumerableMethod =
+        typeof(ListVectorDataWriter).GetMethod(nameof(WriteEnumerable), BindingFlags.Static | BindingFlags.NonPublic)!;
+
     private ulong offset = 0;
     private readonly ulong arraySize;
     private readonly DuckDBLogicalType childType;
     private readonly VectorDataWriterBase listItemWriter;
+    private Type? cachedCollectionType;
+    private CollectionWriterPlan? cachedCollectionWriterPlan;
 
     private bool IsList => ColumnType == DuckDBType.List;
     private ulong vectorReservedSize = DuckDBGlobalData.VectorSize;
@@ -27,59 +41,17 @@ internal sealed unsafe class ListVectorDataWriter : VectorDataWriterBase
 
         ResizeVector(rowIndex % DuckDBGlobalData.VectorSize, count);
 
-        _ = value switch
+        ValidateArraySize(count);
+
+        var collectionWriter = GetCollectionWriter(value.GetType());
+        if (collectionWriter is not null)
         {
-            IEnumerable<bool> items => WriteItems(items),
-            IEnumerable<bool?> items => WriteItems(items),
-
-            IEnumerable<sbyte> items => WriteItems(items),
-            IEnumerable<sbyte?> items => WriteItems(items),
-            IEnumerable<short> items => WriteItems(items),
-            IEnumerable<short?> items => WriteItems(items),
-            IEnumerable<int> items => WriteItems(items),
-            IEnumerable<int?> items => WriteItems(items),
-            IEnumerable<long> items => WriteItems(items),
-            IEnumerable<long?> items => WriteItems(items),
-            IEnumerable<byte> items => WriteItems(items),
-            IEnumerable<byte?> items => WriteItems(items),
-            IEnumerable<ushort> items => WriteItems(items),
-            IEnumerable<ushort?> items => WriteItems(items),
-            IEnumerable<uint> items => WriteItems(items),
-            IEnumerable<uint?> items => WriteItems(items),
-            IEnumerable<ulong> items => WriteItems(items),
-            IEnumerable<ulong?> items => WriteItems(items),
-
-            IEnumerable<float> items => WriteItems(items),
-            IEnumerable<float?> items => WriteItems(items),
-            IEnumerable<double> items => WriteItems(items),
-            IEnumerable<double?> items => WriteItems(items),
-
-            IEnumerable<decimal> items => WriteItems(items),
-            IEnumerable<decimal?> items => WriteItems(items),
-            IEnumerable<BigInteger> items => WriteItems(items),
-            IEnumerable<BigInteger?> items => WriteItems(items),
-
-            IEnumerable<string> items => WriteItems(items),
-            IEnumerable<Guid> items => WriteItems(items),
-            IEnumerable<Guid?> items => WriteItems(items),
-            IEnumerable<DateTime> items => WriteItems(items),
-            IEnumerable<DateTime?> items => WriteItems(items),
-            IEnumerable<TimeSpan> items => WriteItems(items),
-            IEnumerable<TimeSpan?> items => WriteItems(items),
-            IEnumerable<DuckDBDateOnly> items => WriteItems(items),
-            IEnumerable<DuckDBDateOnly?> items => WriteItems(items),
-            IEnumerable<DuckDBTimeOnly> items => WriteItems(items),
-            IEnumerable<DuckDBTimeOnly?> items => WriteItems(items),
-            IEnumerable<DateOnly> items => WriteItems(items),
-            IEnumerable<DateOnly?> items => WriteItems(items),
-            IEnumerable<TimeOnly> items => WriteItems(items),
-            IEnumerable<TimeOnly?> items => WriteItems(items),
-            IEnumerable<DateTimeOffset> items => WriteItems(items),
-            IEnumerable<DateTimeOffset?> items => WriteItems(items),
-            IEnumerable<object> items => WriteItems(items),
-
-            _ => WriteItemsFallback(value),
-        };
+            collectionWriter(this, value, offset);
+        }
+        else
+        {
+            WriteItemsFallback(value);
+        }
 
         var duckDBListEntry = new DuckDBListEntry(offset, count);
         var result = !IsList || AppendValueInternal(duckDBListEntry, rowIndex);
@@ -92,41 +64,131 @@ internal sealed unsafe class ListVectorDataWriter : VectorDataWriterBase
         }
 
         return result;
+    }
 
-        int WriteItems<T>(IEnumerable<T> items)
+    private CollectionWriter? GetCollectionWriter(Type collectionType)
+    {
+        if (collectionType == cachedCollectionType)
         {
-            if (IsList == false && count != arraySize)
-            {
-                throw new InvalidOperationException($"Column has Array size of {arraySize} but the specified value has size of {count}");
-            }
-
-            var index = 0ul;
-
-            foreach (var item in items)
-            {
-                listItemWriter.WriteValue(item, offset + (index++));
-            }
-
-            return 0;
+            return cachedCollectionWriterPlan!.Writer;
         }
 
-        int WriteItemsFallback(IEnumerable items)
+        cachedCollectionType = collectionType;
+        cachedCollectionWriterPlan = CollectionWriterCache.GetValue(collectionType, CreateCollectionWriter);
+        return cachedCollectionWriterPlan.Writer;
+    }
+
+    private void ValidateArraySize(ulong count)
+    {
+        if (!IsList && count != arraySize)
         {
-            if (IsList == false && count != arraySize)
-            {
-                throw new InvalidOperationException($"Column has Array size of {arraySize} but the specified value has size of {count}");
-            }
-
-            var index = 0ul;
-
-            foreach (var item in items)
-            {
-                listItemWriter.WriteValue(item, offset + (index++));
-            }
-
-            return 0;
+            throw new InvalidOperationException(
+                $"Column has Array size of {arraySize} but the specified value has size of {count}");
         }
     }
+
+    private void WriteItemsFallback(IEnumerable items)
+    {
+        var index = 0ul;
+
+        foreach (var item in items)
+        {
+            listItemWriter.WriteValue(item, offset + (index++));
+        }
+    }
+
+    private static CollectionWriterPlan CreateCollectionWriter(Type collectionType)
+    {
+        MethodInfo? openMethod = null;
+        Type? elementType = null;
+
+        if (collectionType.IsSZArray)
+        {
+            openMethod = WriteArrayMethod;
+            elementType = collectionType.GetElementType();
+        }
+        else if (collectionType.IsGenericType &&
+                 collectionType.GetGenericTypeDefinition() == typeof(List<>))
+        {
+            openMethod = WriteListMethod;
+            elementType = collectionType.GetGenericArguments()[0];
+        }
+        else
+        {
+            elementType = GetEnumerableElementType(collectionType);
+            openMethod = elementType is null ? null : WriteEnumerableMethod;
+        }
+
+        return new CollectionWriterPlan(
+            openMethod is null || elementType is null
+                ? null
+                : openMethod.MakeGenericMethod(elementType).CreateDelegate<CollectionWriter>());
+    }
+
+    private static Type? GetEnumerableElementType(Type collectionType)
+    {
+        Type? elementType = null;
+
+        foreach (var interfaceType in collectionType.GetInterfaces())
+        {
+            if (!interfaceType.IsGenericType ||
+                interfaceType.GetGenericTypeDefinition() != typeof(IEnumerable<>))
+            {
+                continue;
+            }
+
+            var candidateType = interfaceType.GetGenericArguments()[0];
+            if (elementType is not null && elementType != candidateType)
+            {
+                return null;
+            }
+
+            elementType = candidateType;
+        }
+
+        return elementType;
+    }
+
+    private static void WriteArray<T>(
+        ListVectorDataWriter writer,
+        ICollection collection,
+        ulong startIndex)
+    {
+        var values = (T[])collection;
+
+        for (var index = 0; index < values.Length; index++)
+        {
+            writer.listItemWriter.WriteValue(values[index], startIndex + (ulong)index);
+        }
+    }
+
+    private static void WriteList<T>(
+        ListVectorDataWriter writer,
+        ICollection collection,
+        ulong startIndex)
+    {
+        var values = (List<T>)collection;
+
+        for (var index = 0; index < values.Count; index++)
+        {
+            writer.listItemWriter.WriteValue(values[index], startIndex + (ulong)index);
+        }
+    }
+
+    private static void WriteEnumerable<T>(
+        ListVectorDataWriter writer,
+        ICollection collection,
+        ulong startIndex)
+    {
+        var index = 0ul;
+
+        foreach (var value in (IEnumerable<T>)collection)
+        {
+            writer.listItemWriter.WriteValue(value, startIndex + index++);
+        }
+    }
+
+    private sealed record CollectionWriterPlan(CollectionWriter? Writer);
 
     private void ResizeVector(ulong rowIndex, ulong count)
     {
@@ -163,6 +225,8 @@ internal sealed unsafe class ListVectorDataWriter : VectorDataWriterBase
 
     public override void Dispose()
     {
+        cachedCollectionType = null;
+        cachedCollectionWriterPlan = null;
         listItemWriter.Dispose();
         childType.Dispose();
     }
