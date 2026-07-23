@@ -1,0 +1,151 @@
+name: Fork Package Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish-fork-package:
+    if: >-
+      (github.event.release.prerelease == true &&
+       startsWith(github.event.release.tag_name, 'v1.5.4-preview.')) ||
+      (github.event.release.prerelease == false &&
+       github.event.release.tag_name == 'v1.5.4')
+    runs-on: ubuntu-latest
+    environment: nuget-preview
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set package version and release mode
+        shell: bash
+        run: |
+          version="${{ github.event.release.tag_name }}"
+          version="${version#v}"
+
+          if [[ "$version" =~ ^1\.5\.4-preview\.[0-9]+$ ]]; then
+            fork_preview=true
+            fork_release=false
+          elif [[ "$version" == "1.5.4" ]]; then
+            fork_preview=false
+            fork_release=true
+          else
+            echo "Unexpected fork package version: $version" >&2
+            exit 1
+          fi
+
+          {
+            echo "PACKAGE_VERSION=$version"
+            echo "FORK_PREVIEW=$fork_preview"
+            echo "FORK_RELEASE=$fork_release"
+          } >> "$GITHUB_ENV"
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore DuckDB.NET.slnx /p:CI=false
+
+      - name: Build
+        run: >-
+          dotnet build DuckDB.NET.slnx
+          --configuration Release
+          --no-restore
+          /m:1
+          /p:BuildType=Full
+          /p:CI=false
+          /p:ForkPreview="$FORK_PREVIEW"
+          /p:ForkRelease="$FORK_RELEASE"
+          /p:Version="$PACKAGE_VERSION"
+          /p:PackageVersion="$PACKAGE_VERSION"
+          /p:UseSharedCompilation=false
+
+      - name: Test
+        run: >-
+          dotnet test DuckDB.NET.Test/Test.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --logger "console;verbosity=quiet"
+          /p:BuildType=Full
+          /p:CI=false
+          /p:ForkPreview="$FORK_PREVIEW"
+          /p:ForkRelease="$FORK_RELEASE"
+          /p:DoesNotReturnAttribute=DoesNotReturnAttribute
+
+      - name: Pack fork packages
+        shell: bash
+        run: |
+          mkdir -p artifacts/fork-release
+          common_args=(
+            --configuration Release
+            --no-build
+            --no-restore
+            --output artifacts/fork-release
+            /m:1
+            /p:BuildType=Full
+            /p:CI=false
+            /p:ForkPreview="$FORK_PREVIEW"
+            /p:ForkRelease="$FORK_RELEASE"
+            /p:ForkPack=true
+            /p:Version="$PACKAGE_VERSION"
+            /p:PackageVersion="$PACKAGE_VERSION"
+          )
+          dotnet pack DuckDB.NET.Bindings/Bindings.csproj "${common_args[@]}"
+
+          dotnet restore DuckDB.NET.Data/Data.csproj \
+            --source artifacts/fork-release \
+            --source https://api.nuget.org/v3/index.json \
+            /p:BuildType=Full \
+            /p:CI=false \
+            /p:ForkPreview="$FORK_PREVIEW" \
+            /p:ForkRelease="$FORK_RELEASE" \
+            /p:ForkPack=true \
+            /p:Version="$PACKAGE_VERSION" \
+            /p:PackageVersion="$PACKAGE_VERSION"
+
+          dotnet pack DuckDB.NET.Data/Data.csproj "${common_args[@]}"
+
+      - name: Validate and smoke-test packages
+        run: ./scripts/validate-fork-packages.sh artifacts/fork-release "$PACKAGE_VERSION"
+
+      - name: Generate checksums
+        working-directory: artifacts/fork-release
+        run: sha256sum *.nupkg > SHA256SUMS
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: duckdb-net-${{ github.event.release.tag_name }}
+          path: |
+            artifacts/fork-release/*.nupkg
+            artifacts/fork-release/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Attach packages to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" artifacts/fork-release/* --clobber
+
+      - name: Authenticate to NuGet.org
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: skuirrels
+
+      - name: Publish fork packages to NuGet.org
+        run: >-
+          dotnet nuget push "artifacts/fork-release/*.nupkg"
+          --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}"
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
