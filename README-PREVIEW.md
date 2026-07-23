@@ -8,7 +8,7 @@ pull requests are under review.
 Install the bundled provider explicitly:
 
 ```shell
-dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.4-preview.1
+dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.5-preview.1
 ```
 
 NuGet packages:
