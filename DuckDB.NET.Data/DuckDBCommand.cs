@@ -1,6 +1,13 @@
 ﻿using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using Apache.Arrow;
+using Apache.Arrow.Ipc;
+using DuckDB.NET.Data.Arrow;
+using DuckDB.NET.Data.DataChunk.Reader;
+using PreparedStatementBase = DuckDB.NET.Data.PreparedStatement.PreparedStatement;
+using ReusablePreparedStatement = DuckDB.NET.Data.PreparedStatement.ReusablePreparedStatement;
 
 namespace DuckDB.NET.Data;
 
@@ -8,6 +15,12 @@ public class DuckDBCommand : DbCommand
 {
     private DuckDBConnection? connection;
     private readonly DuckDBParameterCollection parameters = new();
+    private ReusablePreparedStatement? preparedStatement;
+    private DuckDBConnection? preparedConnection;
+    private List<(DuckDBConnection Connection, ReusablePreparedStatement Statement)>? deferredPreparedStatements;
+    private HashSet<DuckDBConnection>? registeredConnections;
+    private int activeExecutions;
+    private bool disposed;
 
     protected override DbTransaction? DbTransaction { get; set; }
     protected override DbParameterCollection DbParameterCollection => parameters;
@@ -35,15 +48,35 @@ public class DuckDBCommand : DbCommand
         get;
         set
         {
-            // TODO: We shouldn't be able to change the CommandText when the command is in execution (requires CommandState implementation)
-            field = value ?? string.Empty;
+            EnsureNotDisposed();
+
+            var newValue = value ?? string.Empty;
+            if (string.Equals(field, newValue, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            InvalidatePreparedStatements();
+            field = newValue;
         }
     } = string.Empty;
 
     protected override DbConnection? DbConnection
     {
         get => connection;
-        set => connection = (DuckDBConnection?)value;
+        set
+        {
+            EnsureNotDisposed();
+
+            var newConnection = (DuckDBConnection?)value;
+            if (ReferenceEquals(connection, newConnection))
+            {
+                return;
+            }
+
+            InvalidatePreparedStatements();
+            connection = newConnection;
+        }
     }
 
     public DuckDBCommand()
@@ -66,7 +99,12 @@ public class DuckDBCommand : DbCommand
     {
         EnsureConnectionOpen();
 
-        var results = PreparedStatement.PreparedStatement.PrepareMultiple(connection!.NativeConnection, CommandText, parameters, UseStreamingMode);
+        if (preparedStatement is { } reusableStatement)
+        {
+            return ExecutePreparedNonQuery(reusableStatement, connection!.NativeConnection);
+        }
+
+        var results = ExecuteStatements();
 
         var count = 0;
 
@@ -83,6 +121,11 @@ public class DuckDBCommand : DbCommand
     public override object? ExecuteScalar()
     {
         EnsureConnectionOpen();
+
+        if (preparedStatement is { } reusableStatement)
+        {
+            return ExecutePreparedScalar(reusableStatement, connection!.NativeConnection);
+        }
 
         using var reader = ExecuteReader();
         return reader.Read() ? reader.GetValue(0) : null;
@@ -102,21 +145,411 @@ public class DuckDBCommand : DbCommand
     {
         EnsureConnectionOpen();
 
-        var results = PreparedStatement.PreparedStatement.PrepareMultiple(connection!.NativeConnection, CommandText, parameters, UseStreamingMode);
+        var results = ExecuteStatements();
 
         var reader = new DuckDBDataReader(this, results, behavior);
 
         return reader;
     }
 
-    public override void Prepare() { }
+    /// <summary>
+    /// Executes the command and returns the first result set as an Apache Arrow
+    /// <see cref="IArrowArrayStream"/>. Each DuckDB data chunk is converted to an Arrow record batch
+    /// using DuckDB's Arrow C Data Interface, with no row-by-row marshaling.
+    /// When <see cref="UseStreamingMode"/> is enabled, record batches are produced lazily from a
+    /// streaming result (bounded memory), otherwise the result is materialized first.
+    /// The caller owns the returned stream and must dispose it.
+    /// </summary>
+    public IArrowArrayStream ExecuteArrowStream()
+    {
+        EnsureConnectionOpen();
+
+        var results = ExecuteStatements();
+
+        foreach (var result in results)
+        {
+            var current = result;
+
+            if (NativeMethods.Query.DuckDBResultReturnType(current) == DuckDBResultType.QueryResult)
+            {
+                return new DuckDBArrowArrayStream(current);
+            }
+
+            current.Close();
+        }
+
+        throw new InvalidOperationException("The command did not return a result set.");
+    }
+
+    /// <summary>
+    /// Executes the command and asynchronously streams the first result set as Apache Arrow
+    /// <see cref="RecordBatch"/> values. The batches are produced lazily, one per DuckDB data chunk.
+    /// Set <see cref="UseStreamingMode"/> to stream from a streaming result with bounded memory.
+    /// </summary>
+    public async IAsyncEnumerable<RecordBatch> ExecuteArrowBatchesAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var stream = ExecuteArrowStream();
+
+        try
+        {
+            while (await stream.ReadNextRecordBatchAsync(cancellationToken).ConfigureAwait(false) is { } batch)
+            {
+                yield return batch;
+            }
+        }
+        finally
+        {
+            stream.Dispose();
+        }
+    }
+
+    public override void Prepare()
+    {
+        EnsureNotDisposed();
+        EnsureConnectionOpen();
+
+        if (preparedStatement is not null)
+        {
+            return;
+        }
+
+        var statement = PreparedStatementBase.TryPrepareReusable(connection!.NativeConnection, CommandText);
+        if (statement is null)
+        {
+            return;
+        }
+
+        preparedStatement = statement;
+        preparedConnection = connection;
+        RefreshPreparedCommandRegistrations();
+    }
 
     protected override DbParameter CreateDbParameter() => new DuckDBParameter();
 
     internal void CloseConnection() => Connection!.Close();
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !disposed)
+        {
+            disposed = true;
+            InvalidatePreparedStatements();
+
+            if (activeExecutions == 0)
+            {
+                UnregisterFromConnections();
+            }
+        }
+
+        base.Dispose(disposing);
+    }
+
+    private IEnumerable<DuckDBResult> ExecuteStatements()
+    {
+        EnsureNotDisposed();
+
+        var nativeConnection = connection!.NativeConnection;
+        var reusableStatement = preparedStatement;
+
+        return reusableStatement is null
+            ? PreparedStatementBase.PrepareMultiple(nativeConnection, CommandText, parameters, UseStreamingMode)
+            : ExecutePreparedStatement(reusableStatement, nativeConnection);
+    }
+
+    private IEnumerable<DuckDBResult> ExecutePreparedStatement(
+        ReusablePreparedStatement reusableStatement,
+        DuckDBNativeConnection nativeConnection)
+    {
+        BeginPreparedExecution();
+
+        try
+        {
+            yield return reusableStatement.Execute(parameters, UseStreamingMode, nativeConnection);
+        }
+        finally
+        {
+            CompletePreparedExecution();
+        }
+    }
+
+    private int ExecutePreparedNonQuery(
+        ReusablePreparedStatement reusableStatement,
+        DuckDBNativeConnection nativeConnection)
+    {
+        BeginPreparedExecution();
+
+        try
+        {
+            var result = reusableStatement.Execute(parameters, UseStreamingMode, nativeConnection);
+
+            try
+            {
+                var current = result;
+                return (int)NativeMethods.Query.DuckDBRowsChanged(ref current);
+            }
+            finally
+            {
+                result.Close();
+            }
+        }
+        finally
+        {
+            CompletePreparedExecution();
+        }
+    }
+
+    private object? ExecutePreparedScalar(
+        ReusablePreparedStatement reusableStatement,
+        DuckDBNativeConnection nativeConnection)
+    {
+        BeginPreparedExecution();
+
+        try
+        {
+            var result = reusableStatement.Execute(parameters, UseStreamingMode, nativeConnection);
+
+            try
+            {
+                if (NativeMethods.Query.DuckDBResultReturnType(result) != DuckDBResultType.QueryResult ||
+                    NativeMethods.Query.DuckDBColumnCount(ref result) == 0)
+                {
+                    return null;
+                }
+
+                return ReadFirstValue(ref result);
+            }
+            finally
+            {
+                result.Close();
+            }
+        }
+        finally
+        {
+            CompletePreparedExecution();
+        }
+    }
+
+    private static object? ReadFirstValue(ref DuckDBResult result)
+    {
+        var streamingResult = NativeMethods.Types.DuckDBResultIsStreaming(result) > 0;
+        long chunkIndex = 0;
+
+        while (true)
+        {
+            using var chunk = streamingResult
+                ? NativeMethods.StreamingResult.DuckDBStreamFetchChunk(result)
+                : NativeMethods.Types.DuckDBResultGetChunk(result, chunkIndex++);
+
+            if (chunk is null || chunk.IsInvalid)
+            {
+                return null;
+            }
+
+            if (NativeMethods.DataChunks.DuckDBDataChunkGetSize(chunk) == 0)
+            {
+                continue;
+            }
+
+            var vector = NativeMethods.DataChunks.DuckDBDataChunkGetVector(chunk, 0);
+            using var logicalType = NativeMethods.Query.DuckDBColumnLogicalType(ref result, 0);
+            using var reader = VectorDataReaderFactory.CreateReader(vector, logicalType);
+
+            return reader.IsValid(0) ? reader.GetValue(0) : DBNull.Value;
+        }
+    }
+
+    private void BeginPreparedExecution()
+    {
+        activeExecutions++;
+    }
+
+    private void CompletePreparedExecution()
+    {
+        activeExecutions--;
+
+        if (activeExecutions == 0)
+        {
+            DisposeDeferredPreparedStatements();
+        }
+
+        if (disposed && activeExecutions == 0)
+        {
+            UnregisterFromConnections();
+        }
+    }
+
+    private void InvalidatePreparedStatements()
+    {
+        var statement = preparedStatement;
+        var statementConnection = preparedConnection;
+        preparedStatement = null;
+        preparedConnection = null;
+
+        if (statement is null)
+        {
+            return;
+        }
+
+        if (activeExecutions > 0)
+        {
+            deferredPreparedStatements ??= [];
+            deferredPreparedStatements.Add((statementConnection!, statement));
+            RefreshPreparedCommandRegistrations();
+            return;
+        }
+
+        statement.Dispose();
+        RefreshPreparedCommandRegistrations();
+    }
+
+    private void DisposeDeferredPreparedStatements()
+    {
+        var deferredStatements = deferredPreparedStatements;
+        if (deferredStatements is null)
+        {
+            return;
+        }
+
+        foreach (var deferredStatement in deferredStatements)
+        {
+            deferredStatement.Statement.Dispose();
+        }
+
+        deferredPreparedStatements = null;
+        RefreshPreparedCommandRegistrations();
+    }
+
+    internal void OnConnectionClosing(DuckDBConnection closingConnection)
+    {
+        if (ReferenceEquals(preparedConnection, closingConnection))
+        {
+            preparedStatement?.Dispose();
+            preparedStatement = null;
+            preparedConnection = null;
+        }
+
+        for (var index = deferredPreparedStatements?.Count - 1 ?? -1; index >= 0; index--)
+        {
+            var deferredStatement = deferredPreparedStatements![index];
+            if (!ReferenceEquals(deferredStatement.Connection, closingConnection))
+            {
+                continue;
+            }
+
+            deferredStatement.Statement.Dispose();
+            deferredPreparedStatements.RemoveAt(index);
+        }
+
+        if (deferredPreparedStatements?.Count == 0)
+        {
+            deferredPreparedStatements = null;
+        }
+
+        RefreshPreparedCommandRegistrations();
+    }
+
+    private void RefreshPreparedCommandRegistrations()
+    {
+        List<DuckDBConnection>? connectionsToRemove = null;
+
+        if (registeredConnections is not null)
+        {
+            foreach (var registeredConnection in registeredConnections)
+            {
+                if (IsConnectionRequired(registeredConnection))
+                {
+                    continue;
+                }
+
+                connectionsToRemove ??= [];
+                connectionsToRemove.Add(registeredConnection);
+            }
+        }
+
+        if (connectionsToRemove is not null)
+        {
+            foreach (var registeredConnection in connectionsToRemove)
+            {
+                registeredConnection.UnregisterPreparedCommand(this);
+                registeredConnections!.Remove(registeredConnection);
+            }
+        }
+
+        if (registeredConnections?.Count == 0)
+        {
+            registeredConnections = null;
+        }
+
+        if (preparedConnection is not null)
+        {
+            RegisterWithConnection(preparedConnection);
+        }
+
+        if (deferredPreparedStatements is not null)
+        {
+            foreach (var deferredStatement in deferredPreparedStatements)
+            {
+                RegisterWithConnection(deferredStatement.Connection);
+            }
+        }
+    }
+
+    private bool IsConnectionRequired(DuckDBConnection candidate)
+    {
+        if (ReferenceEquals(preparedConnection, candidate))
+        {
+            return true;
+        }
+
+        if (deferredPreparedStatements is null)
+        {
+            return false;
+        }
+
+        foreach (var deferredStatement in deferredPreparedStatements)
+        {
+            if (ReferenceEquals(deferredStatement.Connection, candidate))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void RegisterWithConnection(DuckDBConnection requiredConnection)
+    {
+        registeredConnections ??= [];
+        if (registeredConnections.Add(requiredConnection))
+        {
+            requiredConnection.RegisterPreparedCommand(this);
+        }
+    }
+
+    private void UnregisterFromConnections()
+    {
+        if (registeredConnections is null)
+        {
+            return;
+        }
+
+        foreach (var registeredConnection in registeredConnections)
+        {
+            registeredConnection.UnregisterPreparedCommand(this);
+        }
+
+        registeredConnections = null;
+    }
+
+    private void EnsureNotDisposed()
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+    }
+
     private void EnsureConnectionOpen([CallerMemberName] string operation = "")
     {
+        EnsureNotDisposed();
+
         if (Connection is null || Connection.State != ConnectionState.Open)
         {
             throw new InvalidOperationException($"{operation} requires an open connection");

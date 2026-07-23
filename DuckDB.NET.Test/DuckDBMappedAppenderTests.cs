@@ -185,4 +185,46 @@ public class DuckDBMappedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBas
         reader.GetInt32(2).Should().Be(18);
         reader.IsDBNull(3).Should().BeTrue();
     }
+
+    public class NullableValue
+    {
+        public int Id { get; set; }
+        public int? Value { get; set; }
+    }
+
+    public class NullableValueMap : DuckDBAppenderMap<NullableValue>
+    {
+        public NullableValueMap()
+        {
+            Map(value => value.Id);
+            Map(value => value.Value);
+        }
+    }
+
+    [Fact]
+    public void MappedAppender_CompiledWriterSupportsNullableValues()
+    {
+        Command.CommandText = "CREATE TABLE nullable_values(id INTEGER, value INTEGER);";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender<NullableValue, NullableValueMap>("nullable_values"))
+        {
+            appender.AppendRecords(
+            [
+                new NullableValue { Id = 1, Value = 42 },
+                new NullableValue { Id = 2, Value = null }
+            ]);
+        }
+
+        Command.CommandText = "SELECT id, value FROM nullable_values ORDER BY id";
+        using var reader = Command.ExecuteReader();
+
+        reader.Read().Should().BeTrue();
+        reader.GetInt32(0).Should().Be(1);
+        reader.GetInt32(1).Should().Be(42);
+
+        reader.Read().Should().BeTrue();
+        reader.GetInt32(0).Should().Be(2);
+        reader.IsDBNull(1).Should().BeTrue();
+    }
 }

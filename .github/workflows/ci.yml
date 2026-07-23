@@ -44,13 +44,13 @@ jobs:
         echo "NightlyBuild=true" >> $env:GITHUB_ENV
     
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: 0
         ref: ${{ env.BuildBranch }}
 
     - name: Setup .NET Core SDK
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@v5
       with:
         global-json-file: global.json
 
@@ -82,14 +82,14 @@ jobs:
 
     - name: Upload coverage reports to Codecov
       if: matrix.os == 'ubuntu-latest' && github.event_name != 'schedule'
-      uses: codecov/codecov-action@v4.0.1
+      uses: codecov/codecov-action@v6
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         slug: Giorgi/DuckDB.NET
 
     - name: Upload Artifacts
       if: matrix.os == 'ubuntu-latest' && github.event_name != 'pull_request' && github.actor == 'Giorgi'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: nugetPackages-${{github.ref_name}}
         path: ./**/bin/Release/*.nupkg
@@ -103,7 +103,7 @@ jobs:
     if: github.ref == 'refs/heads/develop' && github.event_name != 'pull_request' && github.event_name != 'schedule'
     steps:
     - name: Download nuget package artifact
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: nugetPackages-${{github.ref_name}}
 

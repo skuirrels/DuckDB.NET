@@ -1,4 +1,8 @@
-﻿namespace DuckDB.NET.Test;
+﻿using DuckDB.NET.Data.DataChunk.Writer;
+using System.Collections.ObjectModel;
+using System.Reflection;
+
+namespace DuckDB.NET.Test;
 
 public class DuckDBManagedAppenderListTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db)
 {
@@ -200,6 +204,109 @@ public class DuckDBManagedAppenderListTests(DuckDBDatabaseFixture db) : DuckDBTe
     }
 
     [Fact]
+    public void IndexedArrayAndListPathsCrossChunkBoundaries()
+    {
+        const int rowCount = 3_000;
+
+        Command.CommandText = """
+            CREATE TABLE indexed_collection_paths(
+                id INTEGER,
+                array_list INTEGER[],
+                typed_list INTEGER[],
+                fixed_array INTEGER[3]);
+            """;
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("indexed_collection_paths"))
+        {
+            for (var index = 0; index < rowCount; index++)
+            {
+                int?[] arrayValues = [index, null, index + 1];
+                List<int?> listValues = [index + 2, null, index + 3];
+                int[] fixedValues = [index + 4, index + 5, index + 6];
+
+                appender.AppendRow(
+                    (index, arrayValues, listValues, fixedValues),
+                    static (row, values) => row
+                        .AppendValue(values.index)
+                        .AppendValue(values.arrayValues)
+                        .AppendValue(values.listValues)
+                        .AppendValue(values.fixedValues));
+            }
+        }
+
+        Command.CommandText = "SELECT * FROM indexed_collection_paths ORDER BY id";
+        using var reader = Command.ExecuteReader();
+
+        for (var index = 0; index < rowCount; index++)
+        {
+            reader.Read().Should().BeTrue();
+            reader.GetInt32(0).Should().Be(index);
+            reader.GetFieldValue<List<int?>>(1).Should().Equal(index, null, index + 1);
+            reader.GetFieldValue<List<int?>>(2).Should().Equal(index + 2, null, index + 3);
+            reader.GetFieldValue<List<int>>(3).Should().Equal(index + 4, index + 5, index + 6);
+        }
+
+        reader.Read().Should().BeFalse();
+    }
+
+    [Fact]
+    public void TypedCollectionFallbackSupportsReadOnlyAndDerivedLists()
+    {
+        Command.CommandText = """
+            CREATE TABLE typed_collection_fallback(
+                id INTEGER,
+                read_only_values INTEGER[],
+                derived_values INTEGER[]);
+            """;
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("typed_collection_fallback"))
+        {
+            for (var index = 0; index < 3_000; index++)
+            {
+                ReadOnlyCollection<int> readOnlyValues =
+                    Array.AsReadOnly(new[] { index, index + 1, index + 2 });
+                DerivedIntList derivedValues = [index + 3, index + 4, index + 5];
+
+                appender.AppendRow(
+                    (index, readOnlyValues, derivedValues),
+                    static (row, values) => row
+                        .AppendValue(values.index)
+                        .AppendValue(values.readOnlyValues)
+                        .AppendValue(values.derivedValues));
+            }
+        }
+
+        Command.CommandText = "SELECT * FROM typed_collection_fallback ORDER BY id";
+        using var reader = Command.ExecuteReader();
+
+        for (var index = 0; index < 3_000; index++)
+        {
+            reader.Read().Should().BeTrue();
+            reader.GetInt32(0).Should().Be(index);
+            reader.GetFieldValue<List<int>>(1).Should().Equal(index, index + 1, index + 2);
+            reader.GetFieldValue<List<int>>(2).Should().Equal(index + 3, index + 4, index + 5);
+        }
+
+        reader.Read().Should().BeFalse();
+    }
+
+    [Fact]
+    public void NonSzArraysUseTheEnumerableFallback()
+    {
+        var values = Array.CreateInstance(typeof(int), [3], [1]);
+        var createWriter = typeof(ListVectorDataWriter).GetMethod(
+            "CreateCollectionWriter",
+            BindingFlags.Static | BindingFlags.NonPublic);
+
+        var plan = createWriter!.Invoke(null, [values.GetType()]);
+        var writer = plan!.GetType().GetProperty("Writer")!.GetValue(plan);
+
+        writer.Should().BeNull();
+    }
+
+    [Fact]
     public void ListValuesEnum()
     {
         Command.CommandText = "CREATE TYPE test_enum AS ENUM('test1','test2','test3');";
@@ -357,4 +464,6 @@ public class DuckDBManagedAppenderListTests(DuckDBDatabaseFixture db) : DuckDBTe
         Test2 = 1,
         Test3 = 2,
     }
+
+    private sealed class DerivedIntList : List<int>;
 }

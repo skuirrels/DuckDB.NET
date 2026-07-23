@@ -40,4 +40,10 @@ internal static class DuckDBTypeMap
 
         return ClrToDbTypeMap.GetValueOrDefault(type, DbType.Object);
     }
+
+    internal static DbType GetDbTypeForType(Type type)
+    {
+        var underlyingType = Nullable.GetUnderlyingType(type) ?? type;
+        return ClrToDbTypeMap.GetValueOrDefault(underlyingType, DbType.Object);
+    }
 }
