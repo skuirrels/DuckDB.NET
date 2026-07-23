@@ -8,7 +8,7 @@ packages the consolidated performance work for DuckDB v1.5.4 under distinct
 Install the bundled provider explicitly:
 
 ```shell
-dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.4
+dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.5
 ```
 
 NuGet packages:
