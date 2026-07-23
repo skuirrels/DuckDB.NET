@@ -133,28 +133,16 @@ internal class PreparedStatement : IDisposable
         return queryResult;
     }
 
-    private void BindParameters(DuckDBParameterCollection parameterCollection)
+    protected virtual void BindParameters(DuckDBParameterCollection parameterCollection)
     {
-        var expectedParameters = ParameterCount;
-        if (parameterCollection.Count < expectedParameters)
-        {
-            throw new InvalidOperationException($"Invalid number of parameters. Expected {expectedParameters}, got {parameterCollection.Count}");
-        }
+        var expectedParameters = ValidateParameterCount(parameterCollection);
 
         // Index-based iteration over the typed collection avoids the per-execution allocations of
         // OfType<>().Any(...) and of the boxed List enumerator that `foreach (DuckDBParameter ...)`
         // over the non-generic collection would produce. BindParameters runs on every execution.
         var count = parameterCollection.Count;
 
-        var hasNamedParameters = false;
-        for (var i = 0; i < count; i++)
-        {
-            if (!string.IsNullOrEmpty(parameterCollection[i].ParameterName))
-            {
-                hasNamedParameters = true;
-                break;
-            }
-        }
+        var hasNamedParameters = HasNamedParameters(parameterCollection);
 
         if (hasNamedParameters)
         {
@@ -202,9 +190,9 @@ internal class PreparedStatement : IDisposable
         var duckDBType = NativeMethods.LogicalType.DuckDBGetTypeId(parameterLogicalType);
 
         DuckDBState result;
-        if (!parameter.Value.TryBindScalarValue(Statement, index, duckDBType, parameter.DbType, out result))
+        if (!parameter.TryBindScalarValue(Statement, index, duckDBType, out result))
         {
-            using var duckDBValue = parameter.Value.ToDuckDBValue(parameterLogicalType, duckDBType, parameter.DbType);
+            using var duckDBValue = parameter.ToDuckDBValue(parameterLogicalType, duckDBType);
             result = NativeMethods.PreparedStatements.DuckDBBindValue(Statement, index, duckDBValue);
         }
 
@@ -213,6 +201,31 @@ internal class PreparedStatement : IDisposable
             var errorMessage = NativeMethods.PreparedStatements.DuckDBPrepareError(Statement);
             throw new InvalidOperationException($"Unable to bind parameter {index}: {errorMessage}");
         }
+    }
+
+    protected long ValidateParameterCount(DuckDBParameterCollection parameterCollection)
+    {
+        var expectedParameters = ParameterCount;
+        if (parameterCollection.Count < expectedParameters)
+        {
+            throw new InvalidOperationException(
+                $"Invalid number of parameters. Expected {expectedParameters}, got {parameterCollection.Count}");
+        }
+
+        return expectedParameters;
+    }
+
+    protected static bool HasNamedParameters(DuckDBParameterCollection parameterCollection)
+    {
+        for (var index = 0; index < parameterCollection.Count; index++)
+        {
+            if (!string.IsNullOrEmpty(parameterCollection[index].ParameterName))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public virtual void Dispose()
@@ -226,6 +239,10 @@ internal sealed class ReusablePreparedStatement : PreparedStatement
     private readonly long cachedParameterCount;
     private readonly DuckDBLogicalType[] cachedParameterTypes;
     private readonly Dictionary<string, long> cachedParameterIndices = new(StringComparer.Ordinal);
+    private DuckDBParameterCollection? cachedParameterCollection;
+    private int cachedParameterCollectionVersion = -1;
+    private int[]? cachedParameterMetadataVersions;
+    private ParameterBinding[]? cachedBindingPlan;
 
     public ReusablePreparedStatement(DuckDBPreparedStatement statement)
         : base(statement)
@@ -264,9 +281,94 @@ internal sealed class ReusablePreparedStatement : PreparedStatement
         return found;
     }
 
+    protected override void BindParameters(DuckDBParameterCollection parameterCollection)
+    {
+        var bindingPlan = GetOrCreateBindingPlan(parameterCollection);
+
+        for (var index = 0; index < bindingPlan.Length; index++)
+        {
+            var binding = bindingPlan[index];
+            BindParameter(binding.Index, binding.Parameter);
+        }
+    }
+
     protected override void BindParameter(long index, DuckDBParameter parameter)
     {
         BindParameter(index, parameter, cachedParameterTypes[index - 1]);
+    }
+
+    private ParameterBinding[] GetOrCreateBindingPlan(DuckDBParameterCollection parameterCollection)
+    {
+        if (IsBindingPlanCurrent(parameterCollection))
+        {
+            return cachedBindingPlan!;
+        }
+
+        var expectedParameters = ValidateParameterCount(parameterCollection);
+        var hasNamedParameters = HasNamedParameters(parameterCollection);
+        var plan = new ParameterBinding[hasNamedParameters
+            ? parameterCollection.Count
+            : checked((int)expectedParameters)];
+        var bindingCount = 0;
+
+        if (hasNamedParameters)
+        {
+            for (var parameterIndex = 0; parameterIndex < parameterCollection.Count; parameterIndex++)
+            {
+                var parameter = parameterCollection[parameterIndex];
+                if (TryGetParameterIndex(parameter.ParameterName, out var nativeIndex))
+                {
+                    plan[bindingCount++] = new ParameterBinding(nativeIndex, parameter);
+                }
+            }
+
+            if (bindingCount != plan.Length)
+            {
+                Array.Resize(ref plan, bindingCount);
+            }
+        }
+        else
+        {
+            for (var parameterIndex = 0; parameterIndex < expectedParameters; parameterIndex++)
+            {
+                plan[bindingCount++] = new ParameterBinding(
+                    parameterIndex + 1,
+                    parameterCollection[parameterIndex]);
+            }
+        }
+
+        cachedParameterCollection = parameterCollection;
+        cachedParameterCollectionVersion = parameterCollection.Version;
+        cachedParameterMetadataVersions = new int[parameterCollection.Count];
+        for (var index = 0; index < cachedParameterMetadataVersions.Length; index++)
+        {
+            cachedParameterMetadataVersions[index] = parameterCollection[index].BindingMetadataVersion;
+        }
+
+        cachedBindingPlan = plan;
+        return plan;
+    }
+
+    private bool IsBindingPlanCurrent(DuckDBParameterCollection parameterCollection)
+    {
+        if (!ReferenceEquals(cachedParameterCollection, parameterCollection) ||
+            cachedParameterCollectionVersion != parameterCollection.Version ||
+            cachedBindingPlan is null ||
+            cachedParameterMetadataVersions is null ||
+            cachedParameterMetadataVersions.Length != parameterCollection.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < cachedParameterMetadataVersions.Length; index++)
+        {
+            if (cachedParameterMetadataVersions[index] != parameterCollection[index].BindingMetadataVersion)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public override void Dispose()
@@ -278,4 +380,6 @@ internal sealed class ReusablePreparedStatement : PreparedStatement
 
         base.Dispose();
     }
+
+    private readonly record struct ParameterBinding(long Index, DuckDBParameter Parameter);
 }

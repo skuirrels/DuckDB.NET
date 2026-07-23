@@ -5,6 +5,7 @@ using System.Threading;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
 using DuckDB.NET.Data.Arrow;
+using DuckDB.NET.Data.DataChunk.Reader;
 using PreparedStatementBase = DuckDB.NET.Data.PreparedStatement.PreparedStatement;
 using ReusablePreparedStatement = DuckDB.NET.Data.PreparedStatement.ReusablePreparedStatement;
 
@@ -120,6 +121,11 @@ public class DuckDBCommand : DbCommand
     public override object? ExecuteScalar()
     {
         EnsureConnectionOpen();
+
+        if (preparedStatement is { } reusableStatement)
+        {
+            return ExecutePreparedScalar(reusableStatement, connection!.NativeConnection);
+        }
 
         using var reader = ExecuteReader();
         return reader.Read() ? reader.GetValue(0) : null;
@@ -289,6 +295,66 @@ public class DuckDBCommand : DbCommand
         finally
         {
             CompletePreparedExecution();
+        }
+    }
+
+    private object? ExecutePreparedScalar(
+        ReusablePreparedStatement reusableStatement,
+        DuckDBNativeConnection nativeConnection)
+    {
+        BeginPreparedExecution();
+
+        try
+        {
+            var result = reusableStatement.Execute(parameters, UseStreamingMode, nativeConnection);
+
+            try
+            {
+                if (NativeMethods.Query.DuckDBResultReturnType(result) != DuckDBResultType.QueryResult ||
+                    NativeMethods.Query.DuckDBColumnCount(ref result) == 0)
+                {
+                    return null;
+                }
+
+                return ReadFirstValue(ref result);
+            }
+            finally
+            {
+                result.Close();
+            }
+        }
+        finally
+        {
+            CompletePreparedExecution();
+        }
+    }
+
+    private static object? ReadFirstValue(ref DuckDBResult result)
+    {
+        var streamingResult = NativeMethods.Types.DuckDBResultIsStreaming(result) > 0;
+        long chunkIndex = 0;
+
+        while (true)
+        {
+            using var chunk = streamingResult
+                ? NativeMethods.StreamingResult.DuckDBStreamFetchChunk(result)
+                : NativeMethods.Types.DuckDBResultGetChunk(result, chunkIndex++);
+
+            if (chunk is null || chunk.IsInvalid)
+            {
+                return null;
+            }
+
+            if (NativeMethods.DataChunks.DuckDBDataChunkGetSize(chunk) == 0)
+            {
+                continue;
+            }
+
+            var vector = NativeMethods.DataChunks.DuckDBDataChunkGetVector(chunk, 0);
+            using var logicalType = NativeMethods.Query.DuckDBColumnLogicalType(ref result, 0);
+            using var reader = VectorDataReaderFactory.CreateReader(vector, logicalType);
+
+            return reader.IsValid(0) ? reader.GetValue(0) : DBNull.Value;
         }
     }
 

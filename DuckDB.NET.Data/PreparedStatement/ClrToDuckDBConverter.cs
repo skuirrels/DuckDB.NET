@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace DuckDB.NET.Data.PreparedStatement;
 
 internal static class ClrToDuckDBConverter
@@ -284,6 +286,197 @@ internal static class ClrToDuckDBConverter
                 result = default;
                 return false;
         }
+    }
+
+    internal static bool TryBindTypedScalarValue<T>(
+        T item,
+        DuckDBPreparedStatement statement,
+        long index,
+        DuckDBType duckDBType,
+        out DuckDBState result)
+    {
+        if (item is null)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindNull(statement, index);
+            return true;
+        }
+
+        if (typeof(T) == typeof(bool) && duckDBType == DuckDBType.Boolean)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindBoolean(
+                statement, index, Unsafe.As<T, bool>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(sbyte) && duckDBType == DuckDBType.TinyInt)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindInt8(
+                statement, index, Unsafe.As<T, sbyte>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(short) && duckDBType == DuckDBType.SmallInt)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindInt16(
+                statement, index, Unsafe.As<T, short>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(int) && duckDBType == DuckDBType.Integer)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindInt32(
+                statement, index, Unsafe.As<T, int>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(long) && duckDBType == DuckDBType.BigInt)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindInt64(
+                statement, index, Unsafe.As<T, long>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(byte) && duckDBType == DuckDBType.UnsignedTinyInt)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindUInt8(
+                statement, index, Unsafe.As<T, byte>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(ushort) && duckDBType == DuckDBType.UnsignedSmallInt)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindUInt16(
+                statement, index, Unsafe.As<T, ushort>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(uint) && duckDBType == DuckDBType.UnsignedInteger)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindUInt32(
+                statement, index, Unsafe.As<T, uint>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(ulong) && duckDBType == DuckDBType.UnsignedBigInt)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindUInt64(
+                statement, index, Unsafe.As<T, ulong>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(float) && duckDBType == DuckDBType.Float)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindFloat(
+                statement, index, Unsafe.As<T, float>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(double) && duckDBType == DuckDBType.Double)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindDouble(
+                statement, index, Unsafe.As<T, double>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(decimal) && duckDBType == DuckDBType.Decimal)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindDecimal(
+                statement, index, ToDuckDBDecimal(Unsafe.As<T, decimal>(ref item)));
+            return true;
+        }
+
+        if (typeof(T) == typeof(BigInteger) && duckDBType == DuckDBType.HugeInt)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindHugeInt(
+                statement, index, new DuckDBHugeInt(Unsafe.As<T, BigInteger>(ref item)));
+            return true;
+        }
+
+        if (typeof(T) == typeof(string) && duckDBType == DuckDBType.Varchar)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindVarchar(
+                statement, index, Unsafe.As<T, string>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(DateTime))
+        {
+            var value = Unsafe.As<T, DateTime>(ref item);
+            switch (duckDBType)
+            {
+                case DuckDBType.Timestamp:
+                    result = NativeMethods.PreparedStatements.DuckDBBindTimestamp(
+                        statement, index, value.ToTimestampStruct(duckDBType));
+                    return true;
+                case DuckDBType.TimestampTz:
+                    result = NativeMethods.PreparedStatements.DuckDBBindTimestampTz(
+                        statement, index, value.ToTimestampStruct(duckDBType));
+                    return true;
+                case DuckDBType.Date:
+                    result = NativeMethods.PreparedStatements.DuckDBBindDate(
+                        statement, index, ((DuckDBDateOnly)value).ToDuckDBDate());
+                    return true;
+                case DuckDBType.Time:
+                    result = NativeMethods.PreparedStatements.DuckDBBindTime(
+                        statement, index, NativeMethods.DateTimeHelpers.DuckDBToTime((DuckDBTimeOnly)value));
+                    return true;
+            }
+        }
+
+        if (typeof(T) == typeof(DateTimeOffset) && duckDBType == DuckDBType.TimestampTz)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindTimestampTz(
+                statement, index, Unsafe.As<T, DateTimeOffset>(ref item).ToTimestampStruct());
+            return true;
+        }
+
+        if (typeof(T) == typeof(TimeSpan) && duckDBType == DuckDBType.Interval)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindInterval(
+                statement, index, Unsafe.As<T, TimeSpan>(ref item));
+            return true;
+        }
+
+        if (typeof(T) == typeof(DateOnly) && duckDBType == DuckDBType.Date)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindDate(
+                statement, index, ((DuckDBDateOnly)Unsafe.As<T, DateOnly>(ref item)).ToDuckDBDate());
+            return true;
+        }
+
+        if (typeof(T) == typeof(TimeOnly) && duckDBType == DuckDBType.Time)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindTime(
+                statement, index,
+                NativeMethods.DateTimeHelpers.DuckDBToTime(Unsafe.As<T, TimeOnly>(ref item)));
+            return true;
+        }
+
+        if (typeof(T) == typeof(DuckDBDateOnly) && duckDBType == DuckDBType.Date)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindDate(
+                statement, index, Unsafe.As<T, DuckDBDateOnly>(ref item).ToDuckDBDate());
+            return true;
+        }
+
+        if (typeof(T) == typeof(DuckDBTimeOnly) && duckDBType == DuckDBType.Time)
+        {
+            result = NativeMethods.PreparedStatements.DuckDBBindTime(
+                statement, index,
+                NativeMethods.DateTimeHelpers.DuckDBToTime(Unsafe.As<T, DuckDBTimeOnly>(ref item)));
+            return true;
+        }
+
+        if (typeof(T) == typeof(byte[]) && duckDBType == DuckDBType.Blob)
+        {
+            var value = Unsafe.As<T, byte[]>(ref item);
+            result = NativeMethods.PreparedStatements.DuckDBBindBlob(
+                statement, index, value, value.LongLength);
+            return true;
+        }
+
+        result = default;
+        return false;
     }
 
     private static bool TryConvertTo<T>(object item, out T result) where T : struct

@@ -1,19 +1,19 @@
-# DuckDB.NET - Performance fork preview
+# DuckDB.NET - Performance fork
 
 This is the [`skuirrels/DuckDB.NET`](https://github.com/skuirrels/DuckDB.NET)
 fork of the [upstream DuckDB.NET project](https://github.com/Giorgi/DuckDB.NET).
-It provides preview packages containing the cutting-edge performance work while
+It provides stable fork packages containing the cutting-edge performance work while
 the corresponding upstream pull requests are reviewed and released.
 
-[![NuGet (Data)](https://img.shields.io/nuget/vpre/Skuirrels.DuckDB.NET.Data.Full.svg?label=NuGet%20%28Data%29)](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Data.Full)
-[![NuGet (Bindings)](https://img.shields.io/nuget/vpre/Skuirrels.DuckDB.NET.Bindings.Full.svg?label=NuGet%20%28Bindings%29)](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Bindings.Full)
+[![NuGet (Data)](https://img.shields.io/nuget/v/Skuirrels.DuckDB.NET.Data.Full.svg?label=NuGet%20%28Data%29)](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Data.Full)
+[![NuGet (Bindings)](https://img.shields.io/nuget/v/Skuirrels.DuckDB.NET.Bindings.Full.svg?label=NuGet%20%28Bindings%29)](https://www.nuget.org/packages/Skuirrels.DuckDB.NET.Bindings.Full)
 [![.NET 8 and 10](https://img.shields.io/badge/.NET-8%20%7C%2010-512BD4)](https://dotnet.microsoft.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
 ## Usage
 
 ```sh
-dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.4-preview.2
+dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.5
 ```
 
 The fork packages retain the official `DuckDB.NET.Data` namespaces and assembly
