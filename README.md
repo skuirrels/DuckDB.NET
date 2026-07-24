@@ -71,10 +71,3 @@ private static void PrintQueryResults(DbDataReader queryResult)
 ## Support
 
 For a fork-specific problem, [create an issue in this fork](https://github.com/skuirrels/DuckDB.NET/issues/new).
-
-
-
-
-[![DuckDB Labs](https://raw.githubusercontent.com/Giorgi/DuckDB.NET/main/.github/sponsors/duckdb-labs-logo.png)](https://duckdblabs.com/)
-
-[![AWS](https://raw.githubusercontent.com/Giorgi/DuckDB.NET/main/.github/sponsors/aws-logo-small.png)](https://github.com/aws/dotnet-foss)
