@@ -66,26 +66,7 @@ private static void PrintQueryResults(DbDataReader queryResult)
 }
 ```
 
-### MotherDuck
 
-To connect to [MotherDuck](https://motherduck.com):
-
-```cs
-using var duckDBConnection = new DuckDBConnection("DataSource=md:{your_database}?motherduck_token=ey...");
-```
-
-## DuckDB Extensions (C#)
-
-If you want to build DuckDB extensions with C#, see [Giorgi/DuckDB.ExtensionKit](https://github.com/Giorgi/DuckDB.ExtensionKit).
-
-## Known Issues
-
-When debugging your project that uses DuckDB.NET library, you may get the following error: **System.AccessViolationException: Attempted to read or write protected memory. This is often an indication that other memory is corrupt**. The error happens due to debugger interaction with the native memory. For a workaround check out [Debugger Options mess up debugging session during Marshalling
-](https://youtrack.jetbrains.com/issue/RIDER-114126/Debugger-Options-mess-up-debugging-session-during-Marshalling)
-
-## Documentation
-
-Documentation is available at [https://duckdb.net](https://duckdb.net)
 
 ## Support
 
@@ -93,13 +74,7 @@ For a fork-specific problem, [create an issue in this fork](https://github.com/s
 For upstream DuckDB.NET support, use the [upstream issue tracker](https://github.com/Giorgi/DuckDB.NET/issues/new).
 You can also join the [DuckDB `dotnet` channel](https://discord.duckdb.org/) for DuckDB.NET-related topics.
 
-## Upstream contributors
 
-[![Contributors](https://contrib.rocks/image?repo=Giorgi/DuckDB.NET)](https://github.com/Giorgi/DuckDB.NET/graphs/contributors)
-
-## Sponsors
-
-A big thanks to [DuckDB Labs](https://duckdblabs.com/) and [AWS Open Source Software Fund](https://github.com/aws/dotnet-foss) for sponsoring the project!
 
 [![DuckDB Labs](https://raw.githubusercontent.com/Giorgi/DuckDB.NET/main/.github/sponsors/duckdb-labs-logo.png)](https://duckdblabs.com/)
 
