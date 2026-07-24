@@ -71,8 +71,7 @@ private static void PrintQueryResults(DbDataReader queryResult)
 ## Support
 
 For a fork-specific problem, [create an issue in this fork](https://github.com/skuirrels/DuckDB.NET/issues/new).
-For upstream DuckDB.NET support, use the [upstream issue tracker](https://github.com/Giorgi/DuckDB.NET/issues/new).
-You can also join the [DuckDB `dotnet` channel](https://discord.duckdb.org/) for DuckDB.NET-related topics.
+
 
 
 
