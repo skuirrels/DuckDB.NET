@@ -109,7 +109,7 @@ using (var appender = connection.CreateAppender("fork_package_smoke"))
 using var verification = connection.CreateCommand();
 verification.CommandText = "SELECT version(), sum(value) FROM fork_package_smoke";
 using var reader = verification.ExecuteReader();
-if (!reader.Read() || !reader.GetString(0).Contains("v1.5.4", StringComparison.Ordinal) || reader.GetInt64(1) != 42)
+if (!reader.Read() || !reader.GetString(0).Contains("v1.5.5", StringComparison.Ordinal) || reader.GetInt64(1) != 42)
 {
     throw new InvalidOperationException("Fork package smoke test failed.");
 }

@@ -2,13 +2,13 @@
 
 This is an unofficial stable build from the
 [`skuirrels/DuckDB.NET`](https://github.com/skuirrels/DuckDB.NET) fork. It
-packages the consolidated performance work for DuckDB v1.5.4 under distinct
+packages the consolidated performance work for DuckDB v1.5.5 under distinct
 `Skuirrels.DuckDB.NET.*` package IDs.
 
 Install the bundled provider explicitly:
 
 ```shell
-dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.5
+dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.5.2
 ```
 
 NuGet packages:
@@ -21,7 +21,7 @@ so application source code does not need to change. Do not reference this fork
 package and the official `DuckDB.NET.Data.Full` package in the same dependency
 graph because they contain assemblies with the same identities.
 
-This release bundles DuckDB v1.5.4 and includes the consolidated appender,
+This release bundles DuckDB v1.5.5 and includes the consolidated appender,
 parameter binding, prepared-command, result materialisation, and scoped-writer
 optimisations from the fork. When equivalent upstream changes are released,
 move back to the official `DuckDB.NET.Data.Full` package.
