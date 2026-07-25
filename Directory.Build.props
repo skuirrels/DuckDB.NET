@@ -21,6 +21,7 @@
 
     <ForkPackageBuild Condition="'$(ForkPreview)' == 'true' OR '$(ForkRelease)' == 'true'">true</ForkPackageBuild>
     <ForkPackagePrefix Condition="'$(ForkPackageBuild)' == 'true' AND '$(ForkPackagePrefix)' == ''">Skuirrels.</ForkPackagePrefix>
+    <DuckDbNativeVersion Condition="'$(DuckDbNativeVersion)' == ''">1.5.5</DuckDbNativeVersion>
     <Product>DuckDB.NET.$(MSBuildProjectName)</Product>
     <PackageId>$(ForkPackagePrefix)DuckDB.NET.$(MSBuildProjectName)</PackageId>
     <PackageTags>DuckDB;ADO.NET;Database;Olap;Embedded</PackageTags>

@@ -12,9 +12,9 @@ Fixes:
 - Fixed ObjectDisposedException in enum appender (#327)
     </PackageReleaseNotes>
     <Description Condition="'$(ForkPreview)' == 'true'">Unofficial preview build of the DuckDB ADO.NET provider from the skuirrels DuckDB.NET fork.</Description>
-    <PackageReleaseNotes Condition="'$(ForkPreview)' == 'true'">Unofficial preview of the consolidated DuckDB.NET performance work for DuckDB v1.5.4. Do not reference this package alongside the official DuckDB.NET packages.</PackageReleaseNotes>
+    <PackageReleaseNotes Condition="'$(ForkPreview)' == 'true'">Unofficial preview of the consolidated DuckDB.NET performance work for DuckDB v$(DuckDbNativeVersion). Do not reference this package alongside the official DuckDB.NET packages.</PackageReleaseNotes>
     <Description Condition="'$(ForkRelease)' == 'true'">Unofficial stable build of the DuckDB ADO.NET provider from the skuirrels DuckDB.NET fork.</Description>
-    <PackageReleaseNotes Condition="'$(ForkRelease)' == 'true'">Stable fork release of the consolidated DuckDB.NET performance work for DuckDB v1.5.5. Do not reference this package alongside the official DuckDB.NET packages.</PackageReleaseNotes>
+    <PackageReleaseNotes Condition="'$(ForkRelease)' == 'true'">Stable fork release of the consolidated DuckDB.NET performance work for DuckDB v$(DuckDbNativeVersion). Do not reference this package alongside the official DuckDB.NET packages.</PackageReleaseNotes>
     <SignAssembly>True</SignAssembly>
     <AssemblyOriginatorKeyFile>..\keyPair.snk</AssemblyOriginatorKeyFile>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
