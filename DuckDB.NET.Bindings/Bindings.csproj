@@ -6,7 +6,7 @@
 - Updated to DuckDB v$(DuckDbNativeVersion)
     </PackageReleaseNotes>
     <Description Condition="'$(ForkPreview)' == 'true'">Unofficial preview build of the DuckDB native bindings from the skuirrels DuckDB.NET fork.</Description>
-    <PackageReleaseNotes Condition="'$(ForkPreview)' == 'true'">Unofficial preview bindings for the consolidated DuckDB.NET performance work, bundling DuckDB v$(DuckDbNativeVersion).</PackageReleaseNotes>
+    <PackageReleaseNotes Condition="'$(ForkPreview)' == 'true'">Unofficial preview bindings for the consolidated DuckDB.NET performance work, bundling DuckDB v1.5.4.</PackageReleaseNotes>
     <Description Condition="'$(ForkRelease)' == 'true'">Unofficial stable build of the DuckDB native bindings from the skuirrels DuckDB.NET fork.</Description>
     <PackageReleaseNotes Condition="'$(ForkRelease)' == 'true'">Stable fork bindings for the consolidated DuckDB.NET performance work, bundling DuckDB v$(DuckDbNativeVersion).</PackageReleaseNotes>
     <RootNamespace>DuckDB.NET.Native</RootNamespace>

@@ -12,10 +12,8 @@ jobs:
   publish-fork-package:
     if: >-
       startsWith(github.event.release.tag_name, 'v1.5.') &&
-      ((github.event.release.prerelease == true &&
-        contains(github.event.release.tag_name, '-preview.')) ||
-       (github.event.release.prerelease == false &&
-        !contains(github.event.release.tag_name, '-')))
+      github.event.release.prerelease == false &&
+      !contains(github.event.release.tag_name, '-')
     runs-on: ubuntu-latest
     environment: nuget-preview
 
@@ -32,21 +30,14 @@ jobs:
           version="${{ github.event.release.tag_name }}"
           version="${version#v}"
 
-          if [[ "$version" =~ ^1\.5\.[0-9]+(\.[0-9]+)?-preview\.[0-9]+$ ]]; then
-            fork_preview=true
-            fork_release=false
-          elif [[ "$version" =~ ^1\.5\.[0-9]+(\.[0-9]+)?$ ]]; then
-            fork_preview=false
-            fork_release=true
-          else
+          if [[ ! "$version" =~ ^1\.5\.[0-9]+(\.[0-9]+)?$ ]]; then
             echo "Unexpected fork package version: $version" >&2
             exit 1
           fi
 
           {
             echo "PACKAGE_VERSION=$version"
-            echo "FORK_PREVIEW=$fork_preview"
-            echo "FORK_RELEASE=$fork_release"
+            echo "FORK_RELEASE=true"
           } >> "$GITHUB_ENV"
 
       - name: Setup .NET SDK
@@ -65,7 +56,6 @@ jobs:
           /m:1
           /p:BuildType=Full
           /p:CI=false
-          /p:ForkPreview="$FORK_PREVIEW"
           /p:ForkRelease="$FORK_RELEASE"
           /p:Version="$PACKAGE_VERSION"
           /p:PackageVersion="$PACKAGE_VERSION"
@@ -80,7 +70,6 @@ jobs:
           --logger "console;verbosity=quiet"
           /p:BuildType=Full
           /p:CI=false
-          /p:ForkPreview="$FORK_PREVIEW"
           /p:ForkRelease="$FORK_RELEASE"
           /p:DoesNotReturnAttribute=DoesNotReturnAttribute
 
@@ -96,7 +85,6 @@ jobs:
             /m:1
             /p:BuildType=Full
             /p:CI=false
-            /p:ForkPreview="$FORK_PREVIEW"
             /p:ForkRelease="$FORK_RELEASE"
             /p:ForkPack=true
             /p:Version="$PACKAGE_VERSION"
@@ -109,7 +97,6 @@ jobs:
             --source https://api.nuget.org/v3/index.json \
             /p:BuildType=Full \
             /p:CI=false \
-            /p:ForkPreview="$FORK_PREVIEW" \
             /p:ForkRelease="$FORK_RELEASE" \
             /p:ForkPack=true \
             /p:Version="$PACKAGE_VERSION" \
