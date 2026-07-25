@@ -9,7 +9,7 @@ internal static class PreparedCommandWorkload
 #if DUCKDB_NET_BASELINE_1_5_3
     private const string ExpectedEngineVersion = "v1.5.3";
 #else
-    private const string ExpectedEngineVersion = "v1.5.4";
+    private const string ExpectedEngineVersion = "v1.5.5";
 #endif
 
     public static DuckDBConnection OpenVerifiedConnection()

@@ -1,47 +1,55 @@
-﻿<Project DefaultTargets="DownloadReleaseNatives;DownloadNightlyNatives">
+﻿<Project DefaultTargets="DownloadNativeLibrary">
 
-  <!-- Release: download lib zip directly -->
-  <Target Name="DownloadReleaseNatives"
-          Condition="!Exists('$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)\native') AND '$(InnerZipName)' == ''">
+  <Target Name="DownloadNativeLibrary">
     <PropertyGroup>
+      <NativeDirectory>$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)\native</NativeDirectory>
       <NativeZipPath>$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)\native.zip</NativeZipPath>
-    </PropertyGroup>
-    <MakeDir Directories="$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)\native" />
-    <Delete Files="$(NativeZipPath)"
-            Condition="Exists('$(NativeZipPath)')"
-            ContinueOnError="true"/>
-    <DownloadFile
-            DestinationFolder="$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)"
-            SourceUrl="$(LibUrl)"
-            Retries="5"
-            RetryDelayMilliseconds="1000"
-            DestinationFileName="native.zip"/>
-    <Unzip DestinationFolder="$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)\native"
-           SourceFiles="$(NativeZipPath)"/>
-    <Delete Files="$(NativeZipPath)"/>
-  </Target>
-
-  <!-- Nightly: download outer zip, extract inner lib zip -->
-  <Target Name="DownloadNightlyNatives"
-          Condition="!Exists('$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)\native') AND '$(InnerZipName)' != ''">
-    <PropertyGroup>
-      <NativeZipPath>$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)\native.zip</NativeZipPath>
+      <NativeSourceStampPath>$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)\source-url.txt</NativeSourceStampPath>
       <TempExtractPath>$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)\temp</TempExtractPath>
     </PropertyGroup>
-    <MakeDir Directories="$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)\native" />
-    <Delete Files="$(NativeZipPath)" Condition="Exists('$(NativeZipPath)')" ContinueOnError="true"/>
+    <ReadLinesFromFile File="$(NativeSourceStampPath)"
+                       Condition="Exists('$(NativeSourceStampPath)')">
+      <Output TaskParameter="Lines" ItemName="_CachedNativeSourceUrl" />
+    </ReadLinesFromFile>
+    <PropertyGroup>
+      <NativeCacheIsCurrent Condition="Exists('$(NativeDirectory)') AND '@(_CachedNativeSourceUrl)' == '$(LibUrl)'">true</NativeCacheIsCurrent>
+      <DownloadNative Condition="'$(NativeCacheIsCurrent)' != 'true'">true</DownloadNative>
+    </PropertyGroup>
+    <RemoveDir Directories="$(NativeDirectory)"
+               Condition="'$(DownloadNative)' == 'true' AND Exists('$(NativeDirectory)')" />
+    <RemoveDir Directories="$(TempExtractPath)"
+               Condition="'$(DownloadNative)' == 'true' AND Exists('$(TempExtractPath)')" />
+    <MakeDir Directories="$(NativeDirectory)"
+             Condition="'$(DownloadNative)' == 'true'" />
+    <Delete Files="$(NativeZipPath)"
+            Condition="'$(DownloadNative)' == 'true' AND Exists('$(NativeZipPath)')"
+            ContinueOnError="true"/>
     <DownloadFile
+            Condition="'$(DownloadNative)' == 'true'"
             DestinationFolder="$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)"
             SourceUrl="$(LibUrl)"
             Retries="5"
             RetryDelayMilliseconds="1000"
             DestinationFileName="native.zip"/>
-    <Unzip DestinationFolder="$(TempExtractPath)"
+    <!-- Release archives contain the native library directly. -->
+    <Unzip Condition="'$(DownloadNative)' == 'true' AND '$(InnerZipName)' == ''"
+           DestinationFolder="$(NativeDirectory)"
            SourceFiles="$(NativeZipPath)"/>
-    <Unzip DestinationFolder="$(MSBuildProjectDirectory)\obj\runtimes\$(Rid)\native"
+    <!-- Nightly artifacts wrap the native archive in an outer platform zip. -->
+    <Unzip Condition="'$(DownloadNative)' == 'true' AND '$(InnerZipName)' != ''"
+           DestinationFolder="$(TempExtractPath)"
+           SourceFiles="$(NativeZipPath)"/>
+    <Unzip Condition="'$(DownloadNative)' == 'true' AND '$(InnerZipName)' != ''"
+           DestinationFolder="$(NativeDirectory)"
            SourceFiles="$(TempExtractPath)\$(InnerZipName)"/>
-    <RemoveDir Directories="$(TempExtractPath)" />
-    <Delete Files="$(NativeZipPath)"/>
+    <RemoveDir Directories="$(TempExtractPath)"
+               Condition="'$(DownloadNative)' == 'true' AND '$(InnerZipName)' != ''" />
+    <Delete Files="$(NativeZipPath)"
+            Condition="'$(DownloadNative)' == 'true'"/>
+    <WriteLinesToFile File="$(NativeSourceStampPath)"
+                      Lines="$(LibUrl)"
+                      Overwrite="true"
+                      Condition="'$(DownloadNative)' == 'true'"/>
   </Target>
 
 </Project>

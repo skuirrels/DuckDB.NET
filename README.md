@@ -13,7 +13,7 @@ the corresponding upstream pull requests are reviewed and released.
 ## Usage
 
 ```sh
-dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.5
+dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.5.2
 ```
 
 The fork packages retain the official `DuckDB.NET.Data` namespaces and assembly
