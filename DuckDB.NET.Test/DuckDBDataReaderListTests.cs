@@ -16,6 +16,30 @@ public class DuckDBDataReaderListTests(DuckDBDatabaseFixture db) : DuckDBTestBas
     }
 
     [Fact]
+    public void PreSizesNonSpecializedListResults()
+    {
+        Command.CommandText = "SELECT range(17)::BIGINT[];";
+        using var reader = Command.ExecuteReader();
+
+        reader.Read();
+        var list = reader.GetFieldValue<List<long>>(0);
+
+        list.Should().HaveCount(17);
+        list.Capacity.Should().Be(17);
+    }
+
+    [Fact]
+    public void ReadListOfLongsWithNulls()
+    {
+        Command.CommandText = "SELECT [1::BIGINT, NULL, 3::BIGINT];";
+        using var reader = Command.ExecuteReader();
+
+        reader.Read();
+        reader.GetFieldValue<List<long?>>(0).Should().Equal(1, null, 3);
+        reader.Invoking(current => current.GetFieldValue<List<long>>(0)).Should().Throw<InvalidCastException>();
+    }
+
+    [Fact]
     public void ReadListOfIntegers()
     {
         Command.CommandText = "SELECT [1, 2, 3];";

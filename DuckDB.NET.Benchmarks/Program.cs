@@ -23,6 +23,7 @@ var benchmarkTypes = new List<Type>
 #if !DUCKDB_NET_BASELINE_1_5_3
     typeof(AppenderBenchmark),
     typeof(ListAppenderBenchmark),
+    typeof(ListMaterializationBenchmark),
     typeof(MappedAppenderBenchmark),
 #endif
     typeof(PreparedCommandBenchmark),
