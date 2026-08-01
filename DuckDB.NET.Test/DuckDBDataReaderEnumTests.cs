@@ -49,6 +49,33 @@ public class DuckDBDataReaderEnumTests : DuckDBTestBase
     }
 
     [Fact]
+    public void SelectNullableEnumList()
+    {
+        Command.CommandText = """
+                              SELECT list_transform(
+                                  range(0, 32),
+                                  value -> CASE value % 4
+                                      WHEN 0 THEN NULL
+                                      WHEN 1 THEN 'sad'::mood
+                                      WHEN 2 THEN 'ok'::mood
+                                      ELSE 'happy'::mood
+                                  END)
+                              """;
+        using var reader = Command.ExecuteReader();
+        reader.Read();
+
+        var list = reader.GetFieldValue<List<Mood?>>(0);
+
+        list.Should().Equal(Enumerable.Range(0, 32).Select(index => (index % 4) switch
+        {
+            0 => (Mood?)null,
+            1 => Mood.Sad,
+            2 => Mood.Ok,
+            _ => Mood.Happy
+        }));
+    }
+
+    [Fact]
     public void SelectEnumValuesAsNullable()
     {
         Command.CommandText = "Select * from person order by name desc";
