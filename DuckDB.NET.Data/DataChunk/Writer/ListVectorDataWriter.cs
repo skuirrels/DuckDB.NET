@@ -13,6 +13,10 @@ internal sealed unsafe class ListVectorDataWriter : VectorDataWriterBase
         typeof(ListVectorDataWriter).GetMethod(nameof(WriteArray), BindingFlags.Static | BindingFlags.NonPublic)!;
     private static readonly MethodInfo WriteListMethod =
         typeof(ListVectorDataWriter).GetMethod(nameof(WriteList), BindingFlags.Static | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo WriteIListMethod =
+        typeof(ListVectorDataWriter).GetMethod(nameof(WriteIList), BindingFlags.Static | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo WriteReadOnlyListMethod =
+        typeof(ListVectorDataWriter).GetMethod(nameof(WriteReadOnlyList), BindingFlags.Static | BindingFlags.NonPublic)!;
     private static readonly MethodInfo WriteEnumerableMethod =
         typeof(ListVectorDataWriter).GetMethod(nameof(WriteEnumerable), BindingFlags.Static | BindingFlags.NonPublic)!;
 
@@ -115,8 +119,22 @@ internal sealed unsafe class ListVectorDataWriter : VectorDataWriterBase
         }
         else
         {
-            elementType = GetEnumerableElementType(collectionType);
-            openMethod = elementType is null ? null : WriteEnumerableMethod;
+            elementType = GetUniqueGenericElementType(collectionType, typeof(IEnumerable<>));
+            if (elementType is not null)
+            {
+                if (typeof(IList<>).MakeGenericType(elementType).IsAssignableFrom(collectionType))
+                {
+                    openMethod = WriteIListMethod;
+                }
+                else if (typeof(IReadOnlyList<>).MakeGenericType(elementType).IsAssignableFrom(collectionType))
+                {
+                    openMethod = WriteReadOnlyListMethod;
+                }
+                else
+                {
+                    openMethod = WriteEnumerableMethod;
+                }
+            }
         }
 
         return new CollectionWriterPlan(
@@ -125,14 +143,14 @@ internal sealed unsafe class ListVectorDataWriter : VectorDataWriterBase
                 : openMethod.MakeGenericMethod(elementType).CreateDelegate<CollectionWriter>());
     }
 
-    private static Type? GetEnumerableElementType(Type collectionType)
+    private static Type? GetUniqueGenericElementType(Type collectionType, Type genericInterfaceType)
     {
         Type? elementType = null;
 
         foreach (var interfaceType in collectionType.GetInterfaces())
         {
             if (!interfaceType.IsGenericType ||
-                interfaceType.GetGenericTypeDefinition() != typeof(IEnumerable<>))
+                interfaceType.GetGenericTypeDefinition() != genericInterfaceType)
             {
                 continue;
             }
@@ -168,6 +186,32 @@ internal sealed unsafe class ListVectorDataWriter : VectorDataWriterBase
         ulong startIndex)
     {
         var values = (List<T>)collection;
+
+        for (var index = 0; index < values.Count; index++)
+        {
+            writer.listItemWriter.WriteValue(values[index], startIndex + (ulong)index);
+        }
+    }
+
+    private static void WriteIList<T>(
+        ListVectorDataWriter writer,
+        ICollection collection,
+        ulong startIndex)
+    {
+        var values = (IList<T>)collection;
+
+        for (var index = 0; index < values.Count; index++)
+        {
+            writer.listItemWriter.WriteValue(values[index], startIndex + (ulong)index);
+        }
+    }
+
+    private static void WriteReadOnlyList<T>(
+        ListVectorDataWriter writer,
+        ICollection collection,
+        ulong startIndex)
+    {
+        var values = (IReadOnlyList<T>)collection;
 
         for (var index = 0; index < values.Count; index++)
         {

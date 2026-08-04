@@ -1,4 +1,5 @@
 ﻿using DuckDB.NET.Data.DataChunk.Writer;
+using System.Collections;
 using System.Collections.ObjectModel;
 using System.Reflection;
 
@@ -251,34 +252,38 @@ public class DuckDBManagedAppenderListTests(DuckDBDatabaseFixture db) : DuckDBTe
     }
 
     [Fact]
-    public void TypedCollectionFallbackSupportsReadOnlyAndDerivedLists()
+    public void IndexedCollectionInterfacesSupportReadOnlyAndDerivedLists()
     {
         Command.CommandText = """
-            CREATE TABLE typed_collection_fallback(
+            CREATE TABLE indexed_collection_interfaces(
                 id INTEGER,
                 read_only_values INTEGER[],
+                read_only_list_values INTEGER[],
                 derived_values INTEGER[]);
             """;
         Command.ExecuteNonQuery();
 
-        using (var appender = Connection.CreateAppender("typed_collection_fallback"))
+        using (var appender = Connection.CreateAppender("indexed_collection_interfaces"))
         {
             for (var index = 0; index < 3_000; index++)
             {
                 ReadOnlyCollection<int> readOnlyValues =
                     Array.AsReadOnly(new[] { index, index + 1, index + 2 });
-                DerivedIntList derivedValues = [index + 3, index + 4, index + 5];
+                ReadOnlyIntListCollection readOnlyListValues =
+                    new([index + 3, index + 4, index + 5]);
+                DerivedIntList derivedValues = [index + 6, index + 7, index + 8];
 
                 appender.AppendRow(
-                    (index, readOnlyValues, derivedValues),
+                    (index, readOnlyValues, readOnlyListValues, derivedValues),
                     static (row, values) => row
                         .AppendValue(values.index)
                         .AppendValue(values.readOnlyValues)
+                        .AppendValue(values.readOnlyListValues)
                         .AppendValue(values.derivedValues));
             }
         }
 
-        Command.CommandText = "SELECT * FROM typed_collection_fallback ORDER BY id";
+        Command.CommandText = "SELECT * FROM indexed_collection_interfaces ORDER BY id";
         using var reader = Command.ExecuteReader();
 
         for (var index = 0; index < 3_000; index++)
@@ -287,9 +292,29 @@ public class DuckDBManagedAppenderListTests(DuckDBDatabaseFixture db) : DuckDBTe
             reader.GetInt32(0).Should().Be(index);
             reader.GetFieldValue<List<int>>(1).Should().Equal(index, index + 1, index + 2);
             reader.GetFieldValue<List<int>>(2).Should().Equal(index + 3, index + 4, index + 5);
+            reader.GetFieldValue<List<int>>(3).Should().Equal(index + 6, index + 7, index + 8);
         }
 
         reader.Read().Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(typeof(int[]), "WriteArray")]
+    [InlineData(typeof(List<int>), "WriteList")]
+    [InlineData(typeof(ReadOnlyCollection<int>), "WriteIList")]
+    [InlineData(typeof(DerivedIntList), "WriteIList")]
+    [InlineData(typeof(ReadOnlyIntListCollection), "WriteReadOnlyList")]
+    public void SelectsIndexedCollectionWriter(Type collectionType, string expectedMethod)
+    {
+        var createWriter = typeof(ListVectorDataWriter).GetMethod(
+            "CreateCollectionWriter",
+            BindingFlags.Static | BindingFlags.NonPublic);
+
+        var plan = createWriter!.Invoke(null, [collectionType]);
+        var writer = plan!.GetType().GetProperty("Writer")!.GetValue(plan) as Delegate;
+
+        writer.Should().NotBeNull();
+        writer!.Method.Name.Should().Be(expectedMethod);
     }
 
     [Fact]
@@ -301,6 +326,19 @@ public class DuckDBManagedAppenderListTests(DuckDBDatabaseFixture db) : DuckDBTe
             BindingFlags.Static | BindingFlags.NonPublic);
 
         var plan = createWriter!.Invoke(null, [values.GetType()]);
+        var writer = plan!.GetType().GetProperty("Writer")!.GetValue(plan);
+
+        writer.Should().BeNull();
+    }
+
+    [Fact]
+    public void CollectionsWithAmbiguousElementTypesUseTheEnumerableFallback()
+    {
+        var createWriter = typeof(ListVectorDataWriter).GetMethod(
+            "CreateCollectionWriter",
+            BindingFlags.Static | BindingFlags.NonPublic);
+
+        var plan = createWriter!.Invoke(null, [typeof(AmbiguousCollection)]);
         var writer = plan!.GetType().GetProperty("Writer")!.GetValue(plan);
 
         writer.Should().BeNull();
@@ -466,4 +504,46 @@ public class DuckDBManagedAppenderListTests(DuckDBDatabaseFixture db) : DuckDBTe
     }
 
     private sealed class DerivedIntList : List<int>;
+
+    private sealed class ReadOnlyIntListCollection(IReadOnlyList<int> values) : IReadOnlyList<int>, ICollection
+    {
+        public int Count => values.Count;
+
+        public int this[int index] => values[index];
+
+        public bool IsSynchronized => false;
+
+        public object SyncRoot => this;
+
+        public void CopyTo(Array array, int index)
+        {
+            for (var valueIndex = 0; valueIndex < values.Count; valueIndex++)
+            {
+                array.SetValue(values[valueIndex], index + valueIndex);
+            }
+        }
+
+        public IEnumerator<int> GetEnumerator() => values.GetEnumerator();
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private sealed class AmbiguousCollection : ICollection, IEnumerable<int>, IEnumerable<string>
+    {
+        public int Count => 0;
+
+        public bool IsSynchronized => false;
+
+        public object SyncRoot => this;
+
+        public void CopyTo(Array array, int index)
+        {
+        }
+
+        IEnumerator<int> IEnumerable<int>.GetEnumerator() => Enumerable.Empty<int>().GetEnumerator();
+
+        IEnumerator<string> IEnumerable<string>.GetEnumerator() => Enumerable.Empty<string>().GetEnumerator();
+
+        IEnumerator IEnumerable.GetEnumerator() => Enumerable.Empty<int>().GetEnumerator();
+    }
 }
