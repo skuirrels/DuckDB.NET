@@ -20,6 +20,7 @@ public class DuckDBDataReader : DbDataReader
     private bool closed;
     private bool hasRows;
     private bool streamingResult;
+    private bool streamEnded;
     private long currentChunkIndex;
 
     private readonly IEnumerator<DuckDBResult> resultEnumerator;
@@ -37,19 +38,29 @@ public class DuckDBDataReader : DbDataReader
 
     private bool InitNextReader()
     {
+        // From DuckDB 2.0 a streaming result that is not read to its end refuses every other statement on the
+        // connection, the next one included, with a "Resource In Use" error. So such a result is released before the
+        // next statement runs, and the reader then has no columns and no rows, also when no result set follows. A
+        // materialized result, or a stream read to its end, stays readable until the next result set replaces it.
+        if (streamingResult && !streamEnded)
+        {
+            ReleaseCurrentResult();
+
+            fieldCount = 0;
+            hasRows = false;
+            streamEnded = true;
+            columnMapping = [];
+        }
+
         while (resultEnumerator.MoveNext())
         {
             var result = resultEnumerator.Current;
             if (NativeMethods.Query.DuckDBResultReturnType(result) == DuckDBResultType.QueryResult)
             {
-                foreach (var reader in vectorReaders)
-                {
-                    reader?.Dispose();
-                }
-
-                vectorReaders = [];
+                ReleaseCurrentResult();
 
                 currentChunkIndex = 0;
+                streamEnded = false;
                 currentResult = result;
 
                 columnMapping = [];
@@ -67,8 +78,36 @@ public class DuckDBDataReader : DbDataReader
         return false;
     }
 
+    // Release the current result set: nothing else holds it, and a materialized result keeps all its rows. Its chunk
+    // points into the result's memory, so dispose the chunk first.
+    private void ReleaseCurrentResult()
+    {
+        foreach (var reader in vectorReaders)
+        {
+            reader?.Dispose();
+        }
+
+        vectorReaders = [];
+
+        currentChunk?.Dispose();
+        currentChunk = null;
+        currentResult.Close();
+        currentResult = default;
+
+        rowsReadFromCurrentChunk = 0;
+        currentChunkRowCount = 0;
+    }
+
     private bool InitChunkData()
     {
+        // A stream that reached its end, or was released, has nothing more to fetch.
+        if (streamEnded)
+        {
+            rowsReadFromCurrentChunk = 0;
+            currentChunkRowCount = 0;
+            return false;
+        }
+
         var canReuse = vectorReaders.Length > 0;
 
         currentChunk?.Dispose();
@@ -77,6 +116,12 @@ public class DuckDBDataReader : DbDataReader
         rowsReadFromCurrentChunk = 0;
 
         currentChunkRowCount = NativeMethods.DataChunks.DuckDBDataChunkGetSize(currentChunk);
+
+        // An empty chunk from a stream is its end. DuckDB 2.0 releases the connection then.
+        if (streamingResult && currentChunkRowCount == 0)
+        {
+            streamEnded = true;
+        }
 
         if (!canReuse)
         {
