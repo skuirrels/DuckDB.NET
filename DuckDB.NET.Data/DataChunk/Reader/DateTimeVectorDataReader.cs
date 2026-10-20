@@ -69,9 +69,43 @@ internal sealed class DateTimeVectorDataReader : VectorDataReaderBase
         {
             DuckDBType.Timestamp or DuckDBType.TimestampS or
             DuckDBType.TimestampTz or DuckDBType.TimestampMs or
-            DuckDBType.TimestampNs => ReadTimestamp<T>(offset),
+            DuckDBType.TimestampNs or DuckDBType.TimestampTzNs => ReadTimestamp<T>(offset),
+            DuckDBType.TimeNs => ReadTimeNs<T>(offset),
             _ => base.GetValidValue<T>(offset)
         };
+    }
+
+    // A TIME_NS is nanoseconds from midnight. What is below a tick is dropped; the value is never negative.
+    private long GetTimeNsTicks(ulong offset) => GetFieldData<DuckDBTimeNs>(offset).Nanos / DateTimeExtensions.NanosecondsPerTick;
+
+    private T ReadTimeNs<T>(ulong offset)
+    {
+        if (typeof(T) == typeof(TimeOnly))
+        {
+            return (T)(object)new TimeOnly(GetTimeNsTicks(offset));
+        }
+
+        if (typeof(T) == typeof(DateTime))
+        {
+            return (T)(object)new DateTime(GetTimeNsTicks(offset));
+        }
+
+        return (T)(object)new TimeSpan(GetTimeNsTicks(offset));
+    }
+
+    private object GetTimeNs(ulong offset, Type targetType)
+    {
+        if (targetType == typeof(TimeOnly))
+        {
+            return new TimeOnly(GetTimeNsTicks(offset));
+        }
+
+        if (targetType == typeof(DateTime))
+        {
+            return new DateTime(GetTimeNsTicks(offset));
+        }
+
+        return new TimeSpan(GetTimeNsTicks(offset));
     }
 
     private T ReadTimestamp<T>(ulong offset)
@@ -110,10 +144,11 @@ internal sealed class DateTimeVectorDataReader : VectorDataReaderBase
         {
             DuckDBType.Date => GetDate(offset, targetType),
             DuckDBType.Time => GetTime(offset, targetType),
+            DuckDBType.TimeNs => GetTimeNs(offset, targetType),
             DuckDBType.TimeTz => GetDateTimeOffset(offset, targetType),
             DuckDBType.Timestamp or DuckDBType.TimestampS or
             DuckDBType.TimestampTz or DuckDBType.TimestampMs or
-            DuckDBType.TimestampNs => GetDateTime(offset, targetType),
+            DuckDBType.TimestampNs or DuckDBType.TimestampTzNs => GetDateTime(offset, targetType),
             _ => base.GetValue(offset, targetType)
         };
     }

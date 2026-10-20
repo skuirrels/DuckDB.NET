@@ -81,6 +81,18 @@ public enum DuckDBType
     VarInt = 35,
     // SQLNULL type
     SqlNull = 36,
+    // STRING_LITERAL type, only useful as logical type
+    StringLiteral = 37,
+    // INTEGER_LITERAL type, only useful as logical type
+    IntegerLiteral = 38,
+    // duckdb_time_ns
+    TimeNs = 39,
+    // GEOMETRY type, stored as WKB in a blob
+    Geometry = 40,
+    // VARIANT type
+    Variant = 41,
+    // duckdb_timestamp, in nanoseconds
+    TimestampTzNs = 42,
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -134,6 +146,12 @@ public struct DuckDBDate
 public struct DuckDBTime
 {
     public long Micros { get; set; }
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct DuckDBTimeNs
+{
+    public long Nanos { get; set; }
 }
 
 [StructLayout(LayoutKind.Sequential)]

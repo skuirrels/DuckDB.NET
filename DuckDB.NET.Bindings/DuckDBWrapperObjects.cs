@@ -176,6 +176,10 @@ public class DuckDBValue() : SafeHandleZeroOrMinusOneIsInvalid(true), IDuckDBVal
             DuckDBType.TimestampMs => Cast(GetTimestampValue(NativeMethods.Value.DuckDBGetTimestampMs(this), DuckDBType.TimestampMs)),
             DuckDBType.TimestampNs => Cast(GetTimestampValue(NativeMethods.Value.DuckDBGetTimestampNs(this), DuckDBType.TimestampNs)),
             DuckDBType.TimestampTz => Cast(GetTimestampValue(NativeMethods.Value.DuckDBGetTimestamp(this), DuckDBType.TimestampTz)),
+            DuckDBType.TimestampTzNs => Cast(GetTimestampValue(NativeMethods.Value.DuckDBGetTimestampTzNs(this), DuckDBType.TimestampTzNs)),
+            // What a TIME_NS has below a tick is dropped.
+            DuckDBType.TimeNs when typeof(T) == typeof(TimeSpan) => Cast(new TimeSpan(NativeMethods.Value.DuckDBGetTimeNs(this).Nanos / 100)),
+            DuckDBType.TimeNs => Cast(new TimeOnly(NativeMethods.Value.DuckDBGetTimeNs(this).Nanos / 100)),
             _ => throw new NotImplementedException($"Cannot read value of type {typeof(T).FullName}")
         };
 
@@ -190,9 +194,9 @@ public class DuckDBValue() : SafeHandleZeroOrMinusOneIsInvalid(true), IDuckDBVal
         // The type-specific getters return values in their native units:
         // - TimestampS: seconds
         // - TimestampMs: milliseconds
-        // - TimestampNs: nanoseconds
+        // - TimestampNs and TimestampTzNs: nanoseconds
         // We need to convert to microseconds for DuckDBTimestamp.FromDuckDBTimestampStruct()
-        if (duckDBType == DuckDBType.TimestampNs)
+        if (duckDBType is DuckDBType.TimestampNs or DuckDBType.TimestampTzNs)
         {
             additionalTicks = (int)(timestampStruct.Micros % 1000 / 100);
             timestampStruct.Micros /= 1000;

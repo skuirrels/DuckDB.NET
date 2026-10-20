@@ -31,6 +31,8 @@ internal static class VectorDataWriterFactory
             DuckDBType.TimestampMs => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
             DuckDBType.TimestampNs => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
             DuckDBType.TimestampTz => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
+            DuckDBType.TimestampTzNs => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
+            DuckDBType.TimeNs => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
             _ => new NumericVectorDataWriter(vector, dataPointer, columnType)
         };
     }

@@ -105,6 +105,14 @@ public partial class NativeMethods
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBValue DuckDBCreateTimestampNs(DuckDBTimestampStruct value);
 
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_create_timestamp_tz_ns")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial DuckDBValue DuckDBCreateTimestampTzNs(DuckDBTimestampStruct value);
+
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_create_time_ns")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial DuckDBValue DuckDBCreateTimeNs(DuckDBTimeNs value);
+
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_create_interval")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBValue DuckDBCreateInterval(DuckDBInterval value);
@@ -199,6 +207,14 @@ public partial class NativeMethods
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_get_timestamp_ns")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBTimestampStruct DuckDBGetTimestampNs(DuckDBValue value);
+
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_get_timestamp_tz_ns")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial DuckDBTimestampStruct DuckDBGetTimestampTzNs(DuckDBValue value);
+
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_get_time_ns")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial DuckDBTimeNs DuckDBGetTimeNs(DuckDBValue value);
 
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_get_interval")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]

@@ -43,5 +43,8 @@ public enum DuckDBErrorType
     Http = 38,
     MissingExtension = 39,
     Autoload = 40,
-    Sequence = 41
+    Sequence = 41,
+    InvalidConfiguration = 42,
+    DataCorruption = 43,
+    ResourceInUse = 44
 }
