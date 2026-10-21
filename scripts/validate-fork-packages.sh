@@ -8,6 +8,9 @@ fi
 
 package_directory=$(cd "$1" && pwd)
 package_version=$2
+# The package version follows the bundled DuckDB version: 2.0.0 and 2.0.0.1 both bundle DuckDB v2.0.0.
+release_version=${package_version%%-*}
+expected_duckdb_version="v$(cut -d. -f1-3 <<< "$release_version")"
 data_package="$package_directory/Skuirrels.DuckDB.NET.Data.Full.$package_version.nupkg"
 bindings_package="$package_directory/Skuirrels.DuckDB.NET.Bindings.Full.$package_version.nupkg"
 
@@ -109,7 +112,8 @@ using (var appender = connection.CreateAppender("fork_package_smoke"))
 using var verification = connection.CreateCommand();
 verification.CommandText = "SELECT version(), sum(value) FROM fork_package_smoke";
 using var reader = verification.ExecuteReader();
-if (!reader.Read() || !reader.GetString(0).Contains("v1.5.6", StringComparison.Ordinal) || reader.GetInt64(1) != 42)
+var expectedDuckDBVersion = args[0];
+if (!reader.Read() || reader.GetString(0) != expectedDuckDBVersion || reader.GetInt64(1) != 42)
 {
     throw new InvalidOperationException("Fork package smoke test failed.");
 }
@@ -120,7 +124,7 @@ EOF
   dotnet restore "$smoke_directory/ForkPackageSmoke.csproj" \
     --configfile "$smoke_directory/NuGet.config" \
     --packages "$validation_directory/packages-$target_framework"
-  dotnet run --project "$smoke_directory/ForkPackageSmoke.csproj" --configuration Release --no-restore
+  dotnet run --project "$smoke_directory/ForkPackageSmoke.csproj" --configuration Release --no-restore -- "$expected_duckdb_version"
 done
 
 echo "Validated fork packages at version $package_version"
