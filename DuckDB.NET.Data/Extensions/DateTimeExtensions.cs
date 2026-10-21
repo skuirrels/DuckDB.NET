@@ -71,8 +71,24 @@ internal static class DateTimeExtensions
 
         if (duckDBType is DuckDBType.TimestampNs or DuckDBType.TimestampTzNs)
         {
-            additionalTicks = (int)(timestamp.Micros % 1000 / 100);
-            timestamp.Micros /= 1000;
+            // What is below a tick is dropped toward minus infinity, so that a moment before 1970 keeps its date and
+            // time of day: a nanosecond before 1970 is 1969-12-31 23:59:59.9999999, not 1970-01-01. DuckDB 2.0 casts
+            // a TIMESTAMP_NS to a TIMESTAMP the same way.
+            var ticks = Math.DivRem(timestamp.Micros, NanosecondsPerTick, out var belowTick);
+            if (belowTick < 0)
+            {
+                ticks--;
+            }
+
+            var micros = Math.DivRem(ticks, TicksPerMicrosecond, out var ticksBelowMicro);
+            if (ticksBelowMicro < 0)
+            {
+                micros--;
+                ticksBelowMicro += TicksPerMicrosecond;
+            }
+
+            additionalTicks = (int)ticksBelowMicro;
+            timestamp.Micros = micros;
         }
 
         if (duckDBType == DuckDBType.TimestampMs)

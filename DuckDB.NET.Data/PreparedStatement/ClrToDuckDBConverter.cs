@@ -214,7 +214,9 @@ internal static class ClrToDuckDBConverter
 
         // These logical types need the exact duckdb_value representation because the scalar C API
         // has no equivalent binder, or because its timestamp unit differs from duckdb_bind_timestamp.
+        // TIMESTAMP_TZ_NS and TIME_NS hold nanoseconds; the scalar binders would drop the seventh digit of a tick.
         if (item is Guid ||
+            duckDBType is DuckDBType.TimestampTzNs or DuckDBType.TimeNs ||
             item is DateTime && duckDBType is DuckDBType.TimestampS or DuckDBType.TimestampMs or DuckDBType.TimestampNs ||
             item is DateTimeOffset && duckDBType == DuckDBType.TimeTz ||
             item is ICollection && (item is not byte[] || duckDBType is DuckDBType.List or DuckDBType.Array))

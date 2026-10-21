@@ -54,7 +54,7 @@ public class DuckDBDataReaderEnumTests : DuckDBTestBase
         Command.CommandText = """
                               SELECT list_transform(
                                   range(0, 32),
-                                  value -> CASE value % 4
+                                  lambda value: CASE value % 4
                                       WHEN 0 THEN NULL
                                       WHEN 1 THEN 'sad'::mood
                                       WHEN 2 THEN 'ok'::mood
