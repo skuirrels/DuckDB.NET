@@ -1,3 +1,5 @@
+using DuckDB.NET.Test.Helpers;
+
 namespace DuckDB.NET.Test;
 
 public class TransactionTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db)
@@ -111,20 +113,21 @@ public class TransactionTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db)
     [Fact]
     public void AbortedTransactionTest()
     {
-        // This block of code is to make the transaction commit fail using a catalog limitation in duckdb
-        // (https://github.com/duckdb/duckdb/issues/20570)
-        Command.CommandText = "CREATE TABLE IF NOT EXISTS test_table (id INTEGER, col INTEGER);";
-        Command.ExecuteNonQuery();
-        Command.CommandText = "INSERT INTO test_table VALUES (1, 1);";
-        Command.ExecuteNonQuery();
+        // Make the commit fail: another connection to the same database commits the same primary key first.
+        // DuckDB 2.0 commits the DROP COLUMN case of https://github.com/duckdb/duckdb/issues/20570 this test used before.
+        using var file = DisposableFile.GenerateInTemp("db");
 
-        using var tx2 = Connection.BeginTransaction();
-        Command.Transaction = tx2;
-        Command.CommandText = "UPDATE test_table SET id = 2;";
-        Command.ExecuteNonQuery();
+        using var connection = new DuckDBConnection(file.ConnectionString);
+        using var other = new DuckDBConnection(file.ConnectionString);
+        connection.Open();
+        other.Open();
 
-        Command.CommandText = "ALTER TABLE test_table DROP COLUMN id;";
-        Command.ExecuteNonQuery();
+        connection.Execute("CREATE TABLE aborted_test (id INTEGER PRIMARY KEY);");
+
+        using var tx2 = connection.BeginTransaction();
+        connection.Execute("INSERT INTO aborted_test VALUES (1);");
+
+        other.Execute("INSERT INTO aborted_test VALUES (1);");
 
         using (new FluentAssertions.Execution.AssertionScope())
         {
@@ -136,7 +139,7 @@ public class TransactionTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db)
             tx2.Invoking(tx2 => tx2.Rollback()).Should().Throw<InvalidOperationException>();
             tx2.Invoking(tx2 => tx2.Dispose()).Should().NotThrow();
 
-            Connection.Invoking(conn => conn.BeginTransaction()).Should().NotThrow();
+            connection.Invoking(conn => conn.BeginTransaction().Dispose()).Should().NotThrow();
         }
     }
 }

@@ -19,6 +19,18 @@ internal static class DateTimeExtensions
         return value.UtcDateTime.ToTimestampStruct(DuckDBType.Timestamp);
     }
 
+    // For a TIMESTAMP_TZ_NS: the instant in nanoseconds.
+    public static DuckDBTimestampStruct ToTimestampNsStruct(this DateTimeOffset value)
+    {
+        return value.UtcDateTime.ToTimestampStruct(DuckDBType.TimestampNs);
+    }
+
+    // A TIME_NS holds every tick of a TimeOnly.
+    public static DuckDBTimeNs ToDuckDBTimeNs(this TimeOnly value) => new() { Nanos = value.Ticks * NanosecondsPerTick };
+
+    // The date is dropped.
+    public static DuckDBTimeNs ToDuckDBTimeNs(this DateTime value) => new() { Nanos = value.Ticks % TimeSpan.TicksPerDay * NanosecondsPerTick };
+
     public static DuckDBTimestampStruct ToTimestampStruct(this DateTime value, DuckDBType duckDBType)
     {
         var ticksSinceEpoch = value.Ticks - DateTime.UnixEpoch.Ticks;
@@ -33,7 +45,7 @@ internal static class DateTimeExtensions
 
         var timestamp = new DuckDBTimestampStruct { Micros = microseconds };
 
-        if (duckDBType == DuckDBType.TimestampNs)
+        if (duckDBType is DuckDBType.TimestampNs or DuckDBType.TimestampTzNs)
         {
             timestamp.Micros *= 1000;
 
@@ -57,10 +69,26 @@ internal static class DateTimeExtensions
     {
         var additionalTicks = 0;
 
-        if (duckDBType == DuckDBType.TimestampNs)
+        if (duckDBType is DuckDBType.TimestampNs or DuckDBType.TimestampTzNs)
         {
-            additionalTicks = (int)(timestamp.Micros % 1000 / 100);
-            timestamp.Micros /= 1000;
+            // What is below a tick is dropped toward minus infinity, so that a moment before 1970 keeps its date and
+            // time of day: a nanosecond before 1970 is 1969-12-31 23:59:59.9999999, not 1970-01-01. DuckDB 2.0 casts
+            // a TIMESTAMP_NS to a TIMESTAMP the same way.
+            var ticks = Math.DivRem(timestamp.Micros, NanosecondsPerTick, out var belowTick);
+            if (belowTick < 0)
+            {
+                ticks--;
+            }
+
+            var micros = Math.DivRem(ticks, TicksPerMicrosecond, out var ticksBelowMicro);
+            if (ticksBelowMicro < 0)
+            {
+                micros--;
+                ticksBelowMicro += TicksPerMicrosecond;
+            }
+
+            additionalTicks = (int)ticksBelowMicro;
+            timestamp.Micros = micros;
         }
 
         if (duckDBType == DuckDBType.TimestampMs)
@@ -84,7 +112,7 @@ internal static class DateTimeExtensions
     {
         return duckDBType switch
         {
-            DuckDBType.TimestampNs => NativeMethods.DateTimeHelpers.DuckDBIsFiniteTimestampNs(timestamp),
+            DuckDBType.TimestampNs or DuckDBType.TimestampTzNs => NativeMethods.DateTimeHelpers.DuckDBIsFiniteTimestampNs(timestamp),
             DuckDBType.TimestampMs => NativeMethods.DateTimeHelpers.DuckDBIsFiniteTimestampMs(timestamp),
             DuckDBType.TimestampS => NativeMethods.DateTimeHelpers.DuckDBIsFiniteTimestampS(timestamp),
             _ => NativeMethods.DateTimeHelpers.DuckDBIsFiniteTimestamp(timestamp)

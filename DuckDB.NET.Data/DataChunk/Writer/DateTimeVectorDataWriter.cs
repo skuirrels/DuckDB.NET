@@ -30,14 +30,38 @@ internal sealed unsafe class DateTimeVectorDataWriter(IntPtr vector, void* vecto
             return AppendValueInternal(timestamp, rowIndex);
         }
 
+        if (ColumnType == DuckDBType.TimestampTzNs)
+        {
+            return AppendValueInternal(value.ToTimestampNsStruct(), rowIndex);
+        }
+
         return base.AppendDateTimeOffset(value, rowIndex);
     }
 
     internal override bool AppendDateOnly(DateOnly value, ulong rowIndex) => AppendValueInternal(((DuckDBDateOnly)value).ToDuckDBDate(), rowIndex);
 
-    internal override bool AppendTimeOnly(TimeOnly value, ulong rowIndex) => AppendValueInternal(NativeMethods.DateTimeHelpers.DuckDBToTime(value), rowIndex);
+    internal override bool AppendTimeOnly(TimeOnly value, ulong rowIndex)
+    {
+        if (ColumnType == DuckDBType.TimeNs)
+        {
+            return AppendValueInternal(value.ToDuckDBTimeNs(), rowIndex);
+        }
+
+        return AppendValueInternal(NativeMethods.DateTimeHelpers.DuckDBToTime(value), rowIndex);
+    }
 
     internal override bool AppendDateOnly(DuckDBDateOnly value, ulong rowIndex) => AppendValueInternal(value.ToDuckDBDate(), rowIndex);
 
-    internal override bool AppendTimeOnly(DuckDBTimeOnly value, ulong rowIndex) => AppendValueInternal(NativeMethods.DateTimeHelpers.DuckDBToTime(value), rowIndex);
+    // A TimeOnly given to IDuckDBAppenderRow becomes a DuckDBTimeOnly, so a TIME_NS column is written here too.
+    internal override bool AppendTimeOnly(DuckDBTimeOnly value, ulong rowIndex)
+    {
+        var time = NativeMethods.DateTimeHelpers.DuckDBToTime(value);
+
+        if (ColumnType == DuckDBType.TimeNs)
+        {
+            return AppendValueInternal(new DuckDBTimeNs { Nanos = time.Micros * 1000 }, rowIndex);
+        }
+
+        return AppendValueInternal(time, rowIndex);
+    }
 }

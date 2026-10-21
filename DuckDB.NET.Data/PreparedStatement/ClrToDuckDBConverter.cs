@@ -84,6 +84,8 @@ internal static class ClrToDuckDBConverter
             (DuckDBType.TimestampNs, DateTime value) => NativeMethods.Value.DuckDBCreateTimestampNs(value.ToTimestampStruct(duckDBType)),
             (DuckDBType.TimestampTz, DateTime value) => NativeMethods.Value.DuckDBCreateTimestampTz(value.ToTimestampStruct(duckDBType)),
             (DuckDBType.TimestampTz, DateTimeOffset value) => NativeMethods.Value.DuckDBCreateTimestampTz(value.ToTimestampStruct()),
+            (DuckDBType.TimestampTzNs, DateTime value) => NativeMethods.Value.DuckDBCreateTimestampTzNs(value.ToTimestampStruct(duckDBType)),
+            (DuckDBType.TimestampTzNs, DateTimeOffset value) => NativeMethods.Value.DuckDBCreateTimestampTzNs(value.ToTimestampNsStruct()),
             (DuckDBType.Interval, TimeSpan value) => NativeMethods.Value.DuckDBCreateInterval(value),
             (DuckDBType.Date, DateTime value) => NativeMethods.Value.DuckDBCreateDate(((DuckDBDateOnly)value).ToDuckDBDate()),
             (DuckDBType.Date, DuckDBDateOnly value) => NativeMethods.Value.DuckDBCreateDate(value.ToDuckDBDate()),
@@ -92,6 +94,8 @@ internal static class ClrToDuckDBConverter
             (DuckDBType.Date, DateOnly value) => NativeMethods.Value.DuckDBCreateDate(((DuckDBDateOnly)value).ToDuckDBDate()),
             (DuckDBType.Time, TimeOnly value) => NativeMethods.Value.DuckDBCreateTime(NativeMethods.DateTimeHelpers.DuckDBToTime(value)),
             (DuckDBType.TimeTz, DateTimeOffset value) => NativeMethods.Value.DuckDBCreateTimeTz(value.ToTimeTzStruct()),
+            (DuckDBType.TimeNs, TimeOnly value) => NativeMethods.Value.DuckDBCreateTimeNs(value.ToDuckDBTimeNs()),
+            (DuckDBType.TimeNs, DateTime value) => NativeMethods.Value.DuckDBCreateTimeNs(value.ToDuckDBTimeNs()),
             (DuckDBType.Blob, byte[] value) => NativeMethods.Value.DuckDBCreateBlob(value, value.Length),
             (DuckDBType.List, ICollection value) => CreateCollectionValue(logicalType, value, true, dbType),
             (DuckDBType.Array, ICollection value) => CreateCollectionValue(logicalType, value, false, dbType),
@@ -210,7 +214,9 @@ internal static class ClrToDuckDBConverter
 
         // These logical types need the exact duckdb_value representation because the scalar C API
         // has no equivalent binder, or because its timestamp unit differs from duckdb_bind_timestamp.
+        // TIMESTAMP_TZ_NS and TIME_NS hold nanoseconds; the scalar binders would drop the seventh digit of a tick.
         if (item is Guid ||
+            duckDBType is DuckDBType.TimestampTzNs or DuckDBType.TimeNs ||
             item is DateTime && duckDBType is DuckDBType.TimestampS or DuckDBType.TimestampMs or DuckDBType.TimestampNs ||
             item is DateTimeOffset && duckDBType == DuckDBType.TimeTz ||
             item is ICollection && (item is not byte[] || duckDBType is DuckDBType.List or DuckDBType.Array))

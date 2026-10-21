@@ -32,6 +32,9 @@ internal static class VectorDataReaderFactory
             DuckDBType.TimestampMs => new DateTimeVectorDataReader(dataPointer, validityMaskPointer, columnType, columnName),
             DuckDBType.TimestampNs => new DateTimeVectorDataReader(dataPointer, validityMaskPointer, columnType, columnName),
             DuckDBType.TimestampTz => new DateTimeVectorDataReader(dataPointer, validityMaskPointer, columnType, columnName),
+            DuckDBType.TimestampTzNs => new DateTimeVectorDataReader(dataPointer, validityMaskPointer, columnType, columnName),
+            DuckDBType.TimeNs => new DateTimeVectorDataReader(dataPointer, validityMaskPointer, columnType, columnName),
+            DuckDBType.Geometry => new StringVectorDataReader(dataPointer, validityMaskPointer, columnType, columnName),
             _ => new NumericVectorDataReader(dataPointer, validityMaskPointer, columnType, columnName)
         };
     }
