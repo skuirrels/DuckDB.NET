@@ -8,7 +8,7 @@ packages the consolidated performance work for DuckDB v1.5.6 under distinct
 Install the bundled provider explicitly:
 
 ```shell
-dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.6
+dotnet add package Skuirrels.DuckDB.NET.Data.Full --version 1.5.7
 ```
 
 NuGet packages:
@@ -23,7 +23,9 @@ graph because they contain assemblies with the same identities.
 
 This release bundles DuckDB v1.5.6 and includes the consolidated appender,
 parameter binding, prepared-command, result materialisation, and scoped-writer
-optimisations from the fork. When equivalent upstream changes are released,
+optimisations from the fork. Version 1.5.7 adds MAP writes through the appender
+and parameter binding, and stops numeric appends from corrupting columns of a
+different width. When equivalent upstream changes are released,
 move back to the official `DuckDB.NET.Data.Full` package.
 
 The original DuckDB.NET and DuckDB licences and attribution are included in the
