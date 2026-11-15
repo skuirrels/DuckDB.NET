@@ -12,7 +12,7 @@ internal sealed unsafe class MapVectorDataWriter : ListEntryVectorDataWriter
 {
     private delegate bool MapWriter(MapVectorDataWriter writer, object map, ulong rowIndex);
 
-    private static readonly ConditionalWeakTable<Type, MapWriterPlan> MapWriterCache = new();
+    private static readonly ConditionalWeakTable<Type, MapWriter> MapWriterCache = new();
     private static readonly MethodInfo WriteDictionaryMethod =
         typeof(MapVectorDataWriter).GetMethod(nameof(WriteDictionary), BindingFlags.Static | BindingFlags.NonPublic)!;
     private static readonly MethodInfo WriteGenericDictionaryMethod =
@@ -55,12 +55,12 @@ internal sealed unsafe class MapVectorDataWriter : ListEntryVectorDataWriter
             return cachedMapWriter!;
         }
 
-        cachedMapWriter = MapWriterCache.GetValue(mapType, CreateMapWriter).Writer;
+        cachedMapWriter = MapWriterCache.GetValue(mapType, CreateMapWriter);
         cachedMapType = mapType;
         return cachedMapWriter;
     }
 
-    private static MapWriterPlan CreateMapWriter(Type mapType)
+    private static MapWriter CreateMapWriter(Type mapType)
     {
         MethodInfo? openMethod = null;
 
@@ -82,16 +82,16 @@ internal sealed unsafe class MapVectorDataWriter : ListEntryVectorDataWriter
 
         if (openMethod is not null)
         {
-            return new MapWriterPlan(openMethod.MakeGenericMethod(keyType!, valueType!).CreateDelegate<MapWriter>());
+            return openMethod.MakeGenericMethod(keyType!, valueType!).CreateDelegate<MapWriter>();
         }
 
         if (typeof(IDictionary).IsAssignableFrom(mapType))
         {
-            return new MapWriterPlan(WriteNonGenericDictionary);
+            return WriteNonGenericDictionary;
         }
 
-        return new MapWriterPlan((_, _, _) =>
-            throw new InvalidOperationException($"Cannot write {mapType.Name} to {DuckDBType.Map} column. Use a dictionary type."));
+        return (_, _, _) =>
+            throw new InvalidOperationException($"Cannot write {mapType.Name} to {DuckDBType.Map} column. Use a dictionary type.");
     }
 
     private static bool WriteDictionary<TKey, TValue>(MapVectorDataWriter writer, object map, ulong rowIndex) where TKey : notnull
@@ -177,8 +177,6 @@ internal sealed unsafe class MapVectorDataWriter : ListEntryVectorDataWriter
     {
         throw new InvalidOperationException("The number of dictionary entries does not match its Count.");
     }
-
-    private sealed record MapWriterPlan(MapWriter Writer);
 
     public override void Dispose()
     {

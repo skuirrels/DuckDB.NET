@@ -54,9 +54,10 @@ public class MapParameterTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db)
         using var reader = Command.ExecuteReader();
         reader.Read();
 
-        UnwrapSingle(reader.GetValue(0)).Should().Be(5);
-        UnwrapSingle(reader.GetValue(1)).Should().Be(7);
-        UnwrapSingle(reader.GetValue(2)).Should().Be(1);
+        // element_at and map_extract return a list of the matching values; the subscript returns the value.
+        reader.GetFieldValue<List<int>>(0).Should().Equal(5);
+        reader.GetFieldValue<List<int>>(1).Should().Equal(7);
+        reader.GetValue(2).Should().Be(1);
         reader.GetValue(3).Should().Be(3UL);
     }
 
@@ -155,9 +156,6 @@ public class MapParameterTests(DuckDBDatabaseFixture db) : DuckDBTestBase(db)
                .Should().Throw<ArgumentException>()
                .WithMessage("*null key*");
     }
-
-    // map_extract and element_at return a single-element list on some DuckDB versions and the value on others.
-    private static object UnwrapSingle(object value) => value is IList { Count: 1 } list ? list[0] : value;
 
     private sealed class NullKeyDictionary : IReadOnlyDictionary<string, int>
     {

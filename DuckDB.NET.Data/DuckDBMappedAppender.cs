@@ -108,32 +108,111 @@ public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppe
 
     private static void ValidateMapColumn(int index, Type propertyType, DuckDBLogicalType columnLogicalType, DuckDBType columnType)
     {
-        if (columnType != DuckDBType.Map)
-        {
-            throw new InvalidOperationException(
-                $"Type mismatch at column index {index}: Mapped type is {propertyType.Name} (expected DuckDB type: {DuckDBType.Map}) but actual column type is {columnType}");
-        }
-
-        // A non-generic IDictionary carries no key or value type to check.
-        if (!propertyType.TryGetDictionaryTypes(out var keyType, out var valueType))
+        if (columnType == DuckDBType.Map && IsCompatible(propertyType, columnLogicalType))
         {
             return;
         }
 
-        using var keyLogicalType = NativeMethods.LogicalType.DuckDBMapTypeKeyType(columnLogicalType);
-        using var valueLogicalType = NativeMethods.LogicalType.DuckDBMapTypeValueType(columnLogicalType);
+        throw new InvalidOperationException(
+            $"Type mismatch at column index {index}: Mapped type is {propertyType.Name} (expected DuckDB type: {DescribeExpected(propertyType)}) but actual column type is {DescribeColumn(columnLogicalType)}");
+    }
 
-        var columnKeyType = NativeMethods.LogicalType.DuckDBGetTypeId(keyLogicalType);
-        var columnValueType = NativeMethods.LogicalType.DuckDBGetTypeId(valueLogicalType);
+    // Checks a CLR type against a column's logical type, descending into MAP keys and values and LIST or ARRAY items.
+    private static bool IsCompatible(Type type, DuckDBLogicalType logicalType)
+    {
+        var columnType = NativeMethods.LogicalType.DuckDBGetTypeId(logicalType);
+        var scalarType = type.UnderlyingTypeOrSelf().GetDuckDBType();
 
-        var expectedKeyType = GetExpectedDuckDBType(keyType);
-        var expectedValueType = GetExpectedDuckDBType(valueType);
-
-        if (expectedKeyType != columnKeyType || expectedValueType != columnValueType)
+        if (scalarType != DuckDBType.Invalid)
         {
-            throw new InvalidOperationException(
-                $"Type mismatch at column index {index}: Mapped type is {propertyType.Name} (expected DuckDB type: {DuckDBType.Map}({expectedKeyType}, {expectedValueType})) but actual column type is {DuckDBType.Map}({columnKeyType}, {columnValueType})");
+            return scalarType == columnType;
         }
+
+        if (type.TryGetDictionaryTypes(out var keyType, out var valueType))
+        {
+            if (columnType != DuckDBType.Map)
+            {
+                return false;
+            }
+
+            using var keyLogicalType = NativeMethods.LogicalType.DuckDBMapTypeKeyType(logicalType);
+            using var valueLogicalType = NativeMethods.LogicalType.DuckDBMapTypeValueType(logicalType);
+
+            return IsCompatible(keyType, keyLogicalType) && IsCompatible(valueType, valueLogicalType);
+        }
+
+        // A non-generic IDictionary carries no key or value type to check.
+        if (typeof(IDictionary).IsAssignableFrom(type))
+        {
+            return columnType == DuckDBType.Map;
+        }
+
+        if (TryGetItemType(type, out var itemType))
+        {
+            using var childLogicalType = columnType switch
+            {
+                DuckDBType.List => NativeMethods.LogicalType.DuckDBListTypeChildType(logicalType),
+                DuckDBType.Array => NativeMethods.LogicalType.DuckDBArrayTypeChildType(logicalType),
+                _ => null
+            };
+
+            return childLogicalType is not null && IsCompatible(itemType, childLogicalType);
+        }
+
+        throw new NotSupportedException($"Type {type.Name} is not supported for mapping");
+    }
+
+    private static bool TryGetItemType(Type type, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Type? itemType)
+    {
+        itemType = type.IsArray
+            ? type.GetElementType()
+            : type.IsGenericType && typeof(IEnumerable).IsAssignableFrom(type) ? type.GetGenericArguments()[0] : null;
+
+        return itemType is not null;
+    }
+
+    private static string DescribeExpected(Type type)
+    {
+        var scalarType = type.UnderlyingTypeOrSelf().GetDuckDBType();
+
+        if (scalarType != DuckDBType.Invalid)
+        {
+            return scalarType.ToString();
+        }
+
+        if (type.TryGetDictionaryTypes(out var keyType, out var valueType))
+        {
+            return $"{DuckDBType.Map}({DescribeExpected(keyType)}, {DescribeExpected(valueType)})";
+        }
+
+        if (typeof(IDictionary).IsAssignableFrom(type))
+        {
+            return DuckDBType.Map.ToString();
+        }
+
+        return TryGetItemType(type, out var itemType) ? $"{DuckDBType.List}({DescribeExpected(itemType)})" : type.Name;
+    }
+
+    private static string DescribeColumn(DuckDBLogicalType logicalType)
+    {
+        var columnType = NativeMethods.LogicalType.DuckDBGetTypeId(logicalType);
+
+        if (columnType == DuckDBType.Map)
+        {
+            using var keyLogicalType = NativeMethods.LogicalType.DuckDBMapTypeKeyType(logicalType);
+            using var valueLogicalType = NativeMethods.LogicalType.DuckDBMapTypeValueType(logicalType);
+            return $"{DuckDBType.Map}({DescribeColumn(keyLogicalType)}, {DescribeColumn(valueLogicalType)})";
+        }
+
+        if (columnType is DuckDBType.List or DuckDBType.Array)
+        {
+            using var childLogicalType = columnType == DuckDBType.List
+                ? NativeMethods.LogicalType.DuckDBListTypeChildType(logicalType)
+                : NativeMethods.LogicalType.DuckDBArrayTypeChildType(logicalType);
+            return $"{columnType}({DescribeColumn(childLogicalType)})";
+        }
+
+        return columnType.ToString();
     }
 
     private static CompiledAppenderMap CreateCompiledMap()

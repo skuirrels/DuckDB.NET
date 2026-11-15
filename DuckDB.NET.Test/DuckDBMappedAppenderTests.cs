@@ -313,4 +313,54 @@ public class DuckDBMappedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBas
         }).Should().Throw<InvalidOperationException>()
           .WithMessage("*Type mismatch at column index 1*");
     }
+
+    public class Scored
+    {
+        public int Id { get; set; }
+        public Dictionary<string, List<int>> Scores { get; set; }
+    }
+
+    public class ScoredMap : DuckDBAppenderMap<Scored>
+    {
+        public ScoredMap()
+        {
+            Map(s => s.Id);
+            Map(s => s.Scores);
+        }
+    }
+
+    [Fact]
+    public void MappedAppender_WritesMapWithListValues()
+    {
+        Command.CommandText = "CREATE TABLE scored(id INTEGER, scores MAP(VARCHAR, INTEGER[]));";
+        Command.ExecuteNonQuery();
+
+        var record = new Scored { Id = 1, Scores = new Dictionary<string, List<int>> { ["a"] = [1, 2], ["b"] = [] } };
+
+        using (var appender = Connection.CreateAppender<Scored, ScoredMap>("scored"))
+        {
+            appender.AppendRecords([record]);
+        }
+
+        Command.CommandText = "SELECT scores FROM scored";
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetFieldValue<Dictionary<string, List<int>>>(0).Should().BeEquivalentTo(record.Scores);
+    }
+
+    [Theory]
+    [InlineData("MAP(VARCHAR, VARCHAR[])")]
+    [InlineData("MAP(VARCHAR, INTEGER)")]
+    [InlineData("MAP(INTEGER, INTEGER[])")]
+    public void MappedAppender_ThrowsOnNestedMapTypeMismatch(string columnType)
+    {
+        Command.CommandText = $"CREATE OR REPLACE TABLE scored_mismatch(id INTEGER, scores {columnType});";
+        Command.ExecuteNonQuery();
+
+        Connection.Invoking(conn =>
+        {
+            using var appender = conn.CreateAppender<Scored, ScoredMap>("scored_mismatch");
+        }).Should().Throw<InvalidOperationException>()
+          .WithMessage("*Type mismatch at column index 1*Map(Varchar, List(Integer))*");
+    }
 }

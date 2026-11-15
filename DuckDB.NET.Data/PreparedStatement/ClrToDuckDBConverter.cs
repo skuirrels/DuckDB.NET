@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
@@ -6,7 +5,8 @@ namespace DuckDB.NET.Data.PreparedStatement;
 
 internal static class ClrToDuckDBConverter
 {
-    private static readonly ConcurrentDictionary<Type, Func<object, MapEntry[]>?> MapEntryReaders = new();
+    // Weak keys, so caching a reader does not keep types from collectible assemblies alive.
+    private static readonly ConditionalWeakTable<Type, Func<object, MapEntry[]>?> MapEntryReaders = new();
     private static readonly MethodInfo DictionaryEntriesMethod =
         typeof(ClrToDuckDBConverter).GetMethod(nameof(GetDictionaryEntries), BindingFlags.Static | BindingFlags.NonPublic)!;
 
@@ -623,9 +623,11 @@ internal static class ClrToDuckDBConverter
             var enumerator = dictionary.GetEnumerator();
             while (enumerator.MoveNext())
             {
+                if (index == entries.Length) ThrowCountMismatch();
                 entries[index++] = new MapEntry(enumerator.Key, enumerator.Value);
             }
 
+            if (index != entries.Length) ThrowCountMismatch();
             return true;
         }
 
@@ -640,7 +642,7 @@ internal static class ClrToDuckDBConverter
             return false;
         }
 
-        var reader = MapEntryReaders.GetOrAdd(item.GetType(), static type =>
+        var reader = MapEntryReaders.GetValue(item.GetType(), static type =>
             type.TryGetDictionaryTypes(out var keyType, out var valueType)
                 ? DictionaryEntriesMethod.MakeGenericMethod(keyType, valueType).CreateDelegate<Func<object, MapEntry[]>>()
                 : null);
@@ -651,16 +653,27 @@ internal static class ClrToDuckDBConverter
 
     private static MapEntry[] GetDictionaryEntries<TKey, TValue>(object item)
     {
+        // The type implements IDictionary<,> or IReadOnlyDictionary<,>, so one of the two counts is always there.
         var pairs = (IEnumerable<KeyValuePair<TKey, TValue>>)item;
-        var entries = new List<MapEntry>(pairs is IReadOnlyCollection<KeyValuePair<TKey, TValue>> collection ? collection.Count : 0);
+        var count = pairs is ICollection<KeyValuePair<TKey, TValue>> collection
+            ? collection.Count
+            : ((IReadOnlyCollection<KeyValuePair<TKey, TValue>>)pairs).Count;
+
+        var entries = new MapEntry[count];
+        var index = 0;
 
         foreach (var pair in pairs)
         {
-            entries.Add(new MapEntry(pair.Key, pair.Value));
+            if (index == entries.Length) ThrowCountMismatch();
+            entries[index++] = new MapEntry(pair.Key, pair.Value);
         }
 
-        return [.. entries];
+        if (index != entries.Length) ThrowCountMismatch();
+        return entries;
     }
+
+    private static void ThrowCountMismatch() =>
+        throw new InvalidOperationException("The number of dictionary entries does not match its Count.");
 
     private static void DisposeAll(DuckDBValue?[] values)
     {
