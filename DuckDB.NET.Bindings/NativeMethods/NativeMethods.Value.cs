@@ -239,6 +239,10 @@ public partial class NativeMethods
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBValue DuckDBCreateArrayValue(DuckDBLogicalType logicalType, IntPtr[] values, long count);
 
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_create_map_value")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial DuckDBValue DuckDBCreateMapValue(DuckDBLogicalType mapType, IntPtr[] keys, IntPtr[] values, ulong entryCount);
+
         // Maybe [SuppressGCTransition]: new Value — one small allocation
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_create_null_value")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -264,6 +268,23 @@ public partial class NativeMethods
             var duckDBValue = DuckDBCreateArrayValue(logicalType, values.Select(item => item.DangerousGetHandle()).ToArray(), count);
 
             duckDBValue.SetChildValues(values);
+
+            return duckDBValue;
+        }
+
+        public static DuckDBValue DuckDBCreateMapValue(DuckDBLogicalType mapType, DuckDBValue[] keys, DuckDBValue[] values)
+        {
+            if (keys.Length != values.Length)
+            {
+                throw new ArgumentException("A MAP value needs the same number of keys and values.", nameof(values));
+            }
+
+            var duckDBValue = DuckDBCreateMapValue(mapType,
+                                                   keys.Select(item => item.DangerousGetHandle()).ToArray(),
+                                                   values.Select(item => item.DangerousGetHandle()).ToArray(),
+                                                   (ulong)keys.Length);
+
+            duckDBValue.SetChildValues([.. keys, .. values]);
 
             return duckDBValue;
         }
