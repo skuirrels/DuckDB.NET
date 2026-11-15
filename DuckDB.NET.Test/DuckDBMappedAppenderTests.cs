@@ -227,4 +227,90 @@ public class DuckDBMappedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBas
         reader.GetInt32(0).Should().Be(2);
         reader.IsDBNull(1).Should().BeTrue();
     }
+    public class Tagged
+    {
+        public int Id { get; set; }
+        public Dictionary<string, int> Counts { get; set; }
+        public IReadOnlyDictionary<int, string> Labels { get; set; }
+        public System.Collections.Hashtable Extra { get; set; }
+    }
+
+    public class TaggedMap : DuckDBAppenderMap<Tagged>
+    {
+        public TaggedMap()
+        {
+            Map(t => t.Id);
+            Map(t => t.Counts);
+            Map(t => t.Labels);
+            Map(t => t.Extra);
+        }
+    }
+
+    public class TaggedCountsOnlyMap : DuckDBAppenderMap<Tagged>
+    {
+        public TaggedCountsOnlyMap()
+        {
+            Map(t => t.Id);
+            Map(t => t.Counts);
+        }
+    }
+
+    [Fact]
+    public void MappedAppender_WritesDictionariesToMapColumns()
+    {
+        Command.CommandText = "CREATE TABLE tagged(id INTEGER, counts MAP(VARCHAR, INTEGER), labels MAP(INTEGER, VARCHAR), extra MAP(VARCHAR, INTEGER));";
+        Command.ExecuteNonQuery();
+
+        var records = Enumerable.Range(0, 3_000).Select(index => new Tagged
+        {
+            Id = index,
+            Counts = index % 10 == 0 ? null : new Dictionary<string, int> { ["a"] = index, ["b"] = -index },
+            Labels = new Dictionary<int, string> { [index] = $"label{index}", [-1] = null },
+            Extra = new System.Collections.Hashtable { ["x"] = index }
+        }).ToList();
+
+        using (var appender = Connection.CreateAppender<Tagged, TaggedMap>("tagged"))
+        {
+            appender.AppendRecords(records);
+        }
+
+        Command.CommandText = "SELECT counts, labels, extra FROM tagged ORDER BY id";
+        using var reader = Command.ExecuteReader();
+
+        foreach (var record in records)
+        {
+            reader.Read().Should().BeTrue();
+
+            if (record.Counts is null)
+            {
+                reader.IsDBNull(0).Should().BeTrue();
+            }
+            else
+            {
+                reader.GetFieldValue<Dictionary<string, int>>(0).Should().Equal(record.Counts);
+            }
+
+            reader.GetFieldValue<Dictionary<int, string>>(1).Should().BeEquivalentTo(record.Labels);
+            reader.GetFieldValue<Dictionary<string, int>>(2).Should().Equal(new Dictionary<string, int> { ["x"] = record.Id });
+        }
+
+        reader.Read().Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("MAP(INTEGER, INTEGER)")]
+    [InlineData("MAP(VARCHAR, BIGINT)")]
+    [InlineData("VARCHAR")]
+    [InlineData("INTEGER[]")]
+    public void MappedAppender_ThrowsOnMapTypeMismatch(string columnType)
+    {
+        Command.CommandText = $"CREATE OR REPLACE TABLE tagged_mismatch(id INTEGER, counts {columnType});";
+        Command.ExecuteNonQuery();
+
+        Connection.Invoking(conn =>
+        {
+            using var appender = conn.CreateAppender<Tagged, TaggedCountsOnlyMap>("tagged_mismatch");
+        }).Should().Throw<InvalidOperationException>()
+          .WithMessage("*Type mismatch at column index 1*");
+    }
 }

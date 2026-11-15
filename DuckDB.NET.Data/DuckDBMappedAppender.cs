@@ -45,6 +45,15 @@ public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppe
             }
 
             var columnType = NativeMethods.LogicalType.DuckDBGetTypeId(columnTypes[index]);
+
+            // Only types that are not scalars need the reflection-based dictionary check.
+            if (mapping.PropertyType.UnderlyingTypeOrSelf().GetDuckDBType() == DuckDBType.Invalid &&
+                IsDictionaryType(mapping.PropertyType))
+            {
+                ValidateMapColumn(index, mapping.PropertyType, columnTypes[index], columnType);
+                continue;
+            }
+
             var expectedType = GetExpectedDuckDBType(mapping.PropertyType);
 
             if (expectedType != columnType)
@@ -92,6 +101,39 @@ public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppe
             DuckDBType.Invalid => throw new NotSupportedException($"Type {type.Name} is not supported for mapping"),
             _ => duckDBType
         };
+    }
+
+    private static bool IsDictionaryType(Type type) =>
+        type.TryGetDictionaryTypes(out _, out _) || typeof(IDictionary).IsAssignableFrom(type);
+
+    private static void ValidateMapColumn(int index, Type propertyType, DuckDBLogicalType columnLogicalType, DuckDBType columnType)
+    {
+        if (columnType != DuckDBType.Map)
+        {
+            throw new InvalidOperationException(
+                $"Type mismatch at column index {index}: Mapped type is {propertyType.Name} (expected DuckDB type: {DuckDBType.Map}) but actual column type is {columnType}");
+        }
+
+        // A non-generic IDictionary carries no key or value type to check.
+        if (!propertyType.TryGetDictionaryTypes(out var keyType, out var valueType))
+        {
+            return;
+        }
+
+        using var keyLogicalType = NativeMethods.LogicalType.DuckDBMapTypeKeyType(columnLogicalType);
+        using var valueLogicalType = NativeMethods.LogicalType.DuckDBMapTypeValueType(columnLogicalType);
+
+        var columnKeyType = NativeMethods.LogicalType.DuckDBGetTypeId(keyLogicalType);
+        var columnValueType = NativeMethods.LogicalType.DuckDBGetTypeId(valueLogicalType);
+
+        var expectedKeyType = GetExpectedDuckDBType(keyType);
+        var expectedValueType = GetExpectedDuckDBType(valueType);
+
+        if (expectedKeyType != columnKeyType || expectedValueType != columnValueType)
+        {
+            throw new InvalidOperationException(
+                $"Type mismatch at column index {index}: Mapped type is {propertyType.Name} (expected DuckDB type: {DuckDBType.Map}({expectedKeyType}, {expectedValueType})) but actual column type is {DuckDBType.Map}({columnKeyType}, {columnValueType})");
+        }
     }
 
     private static CompiledAppenderMap CreateCompiledMap()

@@ -199,6 +199,14 @@ The mapper validates .NET types against DuckDB column types:
 | `Guid` | Uuid |
 | `DateOnly` | Date |
 | `TimeOnly` | Time |
+| `Dictionary<TKey, TValue>`, `IDictionary<TKey, TValue>`, `IReadOnlyDictionary<TKey, TValue>` | Map(key type, value type) |
+| `IDictionary` (non-generic) | Map (key and value types are not checked) |
+
+For dictionary properties, the key and value types are validated against the MAP column's key and value
+types using the same rules as scalar columns, so a `Dictionary<string, int>` property needs a
+`MAP(VARCHAR, INTEGER)` column. Keys and values must be scalar types from the table above. A `null`
+dictionary writes a NULL map, a `null` value writes a NULL map value, and a `null` key throws an
+`ArgumentException` because DuckDB MAP keys cannot be NULL.
 
 ## Performance
 

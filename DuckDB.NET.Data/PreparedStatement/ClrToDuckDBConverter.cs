@@ -1,9 +1,15 @@
+using System.Collections.Concurrent;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 
 namespace DuckDB.NET.Data.PreparedStatement;
 
 internal static class ClrToDuckDBConverter
 {
+    private static readonly ConcurrentDictionary<Type, Func<object, MapEntry[]>?> MapEntryReaders = new();
+    private static readonly MethodInfo DictionaryEntriesMethod =
+        typeof(ClrToDuckDBConverter).GetMethod(nameof(GetDictionaryEntries), BindingFlags.Static | BindingFlags.NonPublic)!;
+
     private static readonly Dictionary<DbType, Func<object, DuckDBValue>> ValueCreators = new()
     {
         { DbType.Guid, value => NativeMethods.Value.DuckDBCreateUuid(((Guid)value).ToHugeInt(false)) },
@@ -93,6 +99,10 @@ internal static class ClrToDuckDBConverter
             (DuckDBType.Time, TimeOnly value) => NativeMethods.Value.DuckDBCreateTime(NativeMethods.DateTimeHelpers.DuckDBToTime(value)),
             (DuckDBType.TimeTz, DateTimeOffset value) => NativeMethods.Value.DuckDBCreateTimeTz(value.ToTimeTzStruct()),
             (DuckDBType.Blob, byte[] value) => NativeMethods.Value.DuckDBCreateBlob(value, value.Length),
+            // Dictionaries are collections too, so they must be matched before the LIST and ARRAY cases.
+            (DuckDBType.Map, _) when TryGetMapEntries(item, out var entries) => CreateMapValue(logicalType, entries, dbType),
+            // Without a MAP target type (for example an inferred parameter), infer MAP(K, V) from a generic dictionary.
+            (_, _) when TryGetGenericMapEntries(item, out var entries) => CreateMapFromClrType(item.GetType(), entries, dbType),
             (DuckDBType.List, ICollection value) => CreateCollectionValue(logicalType, value, true, dbType),
             (DuckDBType.Array, ICollection value) => CreateCollectionValue(logicalType, value, false, dbType),
             (_, ICollection value) when item is not byte[] => CreateListFromClrType(value, dbType),
@@ -538,6 +548,123 @@ internal static class ClrToDuckDBConverter
 
         return values;
     }
+
+    private static DuckDBValue CreateMapValue(DuckDBLogicalType mapType, MapEntry[] entries, DbType dbType)
+    {
+        using var keyType = NativeMethods.LogicalType.DuckDBMapTypeKeyType(mapType);
+        using var valueType = NativeMethods.LogicalType.DuckDBMapTypeValueType(mapType);
+
+        var keyDuckDBType = NativeMethods.LogicalType.DuckDBGetTypeId(keyType);
+        var valueDuckDBType = NativeMethods.LogicalType.DuckDBGetTypeId(valueType);
+
+        var keys = new DuckDBValue[entries.Length];
+        var values = new DuckDBValue[entries.Length];
+
+        try
+        {
+            for (var index = 0; index < entries.Length; index++)
+            {
+                var entry = entries[index];
+
+                if (entry.Key.IsNull())
+                {
+                    throw new ArgumentException("Cannot bind a dictionary with a null key to a MAP parameter. MAP keys must not be NULL.");
+                }
+
+                keys[index] = entry.Key.ToDuckDBValue(keyType, keyDuckDBType, dbType);
+                values[index] = entry.Value.ToDuckDBValue(valueType, valueDuckDBType, dbType);
+            }
+        }
+        catch
+        {
+            DisposeAll(keys);
+            DisposeAll(values);
+            throw;
+        }
+
+        // The MAP value owns the key and value handles from here on and destroys them with itself.
+        var mapValue = NativeMethods.Value.DuckDBCreateMapValue(mapType, keys, values);
+
+        if (mapValue.IsInvalid)
+        {
+            mapValue.Dispose();
+            DisposeAll(keys);
+            DisposeAll(values);
+            throw new InvalidOperationException("DuckDB could not create a MAP value from the dictionary.");
+        }
+
+        return mapValue;
+    }
+
+    private static DuckDBValue CreateMapFromClrType(Type dictionaryType, MapEntry[] entries, DbType dbType)
+    {
+        using var mapType = dictionaryType.GetLogicalType();
+        return CreateMapValue(mapType, entries, dbType);
+    }
+
+    private static bool TryGetMapEntries(object item, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out MapEntry[]? entries)
+    {
+        if (TryGetGenericMapEntries(item, out entries))
+        {
+            return true;
+        }
+
+        if (item is IDictionary dictionary)
+        {
+            entries = new MapEntry[dictionary.Count];
+
+            var index = 0;
+            var enumerator = dictionary.GetEnumerator();
+            while (enumerator.MoveNext())
+            {
+                entries[index++] = new MapEntry(enumerator.Key, enumerator.Value);
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetGenericMapEntries(object item, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out MapEntry[]? entries)
+    {
+        if (item is string or byte[] || item is not IEnumerable)
+        {
+            entries = null;
+            return false;
+        }
+
+        var reader = MapEntryReaders.GetOrAdd(item.GetType(), static type =>
+            type.TryGetDictionaryTypes(out var keyType, out var valueType)
+                ? DictionaryEntriesMethod.MakeGenericMethod(keyType, valueType).CreateDelegate<Func<object, MapEntry[]>>()
+                : null);
+
+        entries = reader?.Invoke(item);
+        return entries is not null;
+    }
+
+    private static MapEntry[] GetDictionaryEntries<TKey, TValue>(object item)
+    {
+        var pairs = (IEnumerable<KeyValuePair<TKey, TValue>>)item;
+        var entries = new List<MapEntry>(pairs is IReadOnlyCollection<KeyValuePair<TKey, TValue>> collection ? collection.Count : 0);
+
+        foreach (var pair in pairs)
+        {
+            entries.Add(new MapEntry(pair.Key, pair.Value));
+        }
+
+        return [.. entries];
+    }
+
+    private static void DisposeAll(DuckDBValue?[] values)
+    {
+        foreach (var value in values)
+        {
+            value?.Dispose();
+        }
+    }
+
+    private readonly record struct MapEntry(object? Key, object? Value);
 
     private static DuckDBValue DecimalToDuckDBValue(decimal value)
         => NativeMethods.Value.DuckDBCreateDecimal(ToDuckDBDecimal(value));

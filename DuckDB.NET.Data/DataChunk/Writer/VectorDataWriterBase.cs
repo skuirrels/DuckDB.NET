@@ -60,6 +60,8 @@ internal unsafe class VectorDataWriterBase(IntPtr vector, void* vectorData, Duck
             TimeOnly val => AppendTimeOnly(val, rowIndex),
             DateTimeOffset val => AppendDateTimeOffset(val, rowIndex),
             ICollection val => AppendCollection(val, rowIndex),
+            // Some IReadOnlyDictionary<TKey, TValue> implementations are not an ICollection.
+            IEnumerable val when columnType == DuckDBType.Map => AppendMap(val, rowIndex),
             _ => ThrowException<T>()
         };
     }
@@ -381,6 +383,8 @@ internal unsafe class VectorDataWriterBase(IntPtr vector, void* vectorData, Duck
     internal virtual bool AppendEnum<TEnum>(TEnum value, ulong rowIndex) where TEnum : Enum => ThrowException<TEnum>();
 
     internal virtual bool AppendCollection(ICollection value, ulong rowIndex) => ThrowException<ICollection>();
+
+    internal virtual bool AppendMap(IEnumerable value, ulong rowIndex) => ThrowException<IEnumerable>();
 
     private bool ThrowException<T>()
     {
