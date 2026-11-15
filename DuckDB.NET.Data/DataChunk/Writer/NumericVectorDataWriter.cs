@@ -20,10 +20,12 @@ internal sealed unsafe class NumericVectorDataWriter(IntPtr vector, void* vector
     {
         switch (ColumnType)
         {
-            case DuckDBType.HugeInt:
+            case DuckDBType.HugeInt when value >= (BigInteger)Int128.MinValue && value <= (BigInteger)Int128.MaxValue:
                 return AppendValueInternal(new DuckDBHugeInt(value), rowIndex);
-            case DuckDBType.UnsignedHugeInt:
+            case DuckDBType.UnsignedHugeInt when value.Sign >= 0 && value <= (BigInteger)UInt128.MaxValue:
                 return AppendValueInternal(new DuckDBUHugeInt(value), rowIndex);
+            case DuckDBType.HugeInt or DuckDBType.UnsignedHugeInt:
+                throw OutOfRange(value);
             case DuckDBType.Float:
                 return AppendValueInternal((float)value, rowIndex);
             case DuckDBType.Double:
