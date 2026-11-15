@@ -14,6 +14,13 @@ public class DuckDBAppenderRow : IDuckDBAppenderRow
 
     internal ulong ChunkRowIndex => rowIndex;
 
+    /// <summary>
+    /// Gets whether every column of this row has been written. The column cursor only advances
+    /// after a successful write, so a row whose write threw, or that was abandoned part way, is
+    /// incomplete and its slot in the data chunk holds uninitialised data.
+    /// </summary>
+    internal bool IsComplete => columnIndex >= vectorWriters.Length;
+
     internal DuckDBAppenderRow(string qualifiedTableName, VectorDataWriterBase[] vectorWriters,
                                ulong rowIndex, DuckDBDataChunk dataChunk, Native.DuckDBAppender nativeAppender)
     {
