@@ -14,6 +14,10 @@ public partial class NativeMethods
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBLogicalType DuckDBCreateListType(DuckDBLogicalType type);
 
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_create_map_type")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial DuckDBLogicalType DuckDBCreateMapType(DuckDBLogicalType keyType, DuckDBLogicalType valueType);
+
         // Maybe [SuppressGCTransition]: new LogicalType + DecimalType — two small allocations
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_create_decimal_type")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]

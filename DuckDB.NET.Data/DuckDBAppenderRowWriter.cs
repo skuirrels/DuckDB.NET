@@ -101,6 +101,14 @@ public ref struct DuckDBAppenderRowWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void AppendValue<T>(IEnumerable<T>? value) => row.AppendValue(value);
 
+    /// <summary>
+    /// Appends a non-generic dictionary to a MAP column. Generic dictionaries bind to
+    /// <see cref="AppendValue{T}(IEnumerable{T})"/>, which also writes MAP columns.
+    /// </summary>
+    [OverloadResolutionPriority(-1)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void AppendValue(IDictionary? value) => row.AppendValue(value);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void AppendDefault() => row.AppendDefault();
 }
