@@ -131,10 +131,21 @@ public class DuckDBManagedAppenderNumericConversionTests(DuckDBDatabaseFixture d
         AssertRejected<OverflowException>(columnType, row => row.AppendValue(value), "*out of range*");
     }
 
-    [Fact]
-    public void OutOfRangeBigIntegerThrows()
+    public static TheoryData<string, string> OutOfRangeBigIntegers => new()
     {
-        AssertRejected<OverflowException>("BIGINT", row => row.AppendValue((BigInteger)long.MaxValue + 1), "*out of range*");
+        { "BIGINT", ((BigInteger)long.MaxValue + 1).ToString(CultureInfo.InvariantCulture) },
+        { "HUGEINT", BigInteger.Pow(2, 127).ToString(CultureInfo.InvariantCulture) },
+        { "HUGEINT", (-BigInteger.Pow(2, 127) - 1).ToString(CultureInfo.InvariantCulture) },
+        { "UHUGEINT", BigInteger.Pow(2, 128).ToString(CultureInfo.InvariantCulture) },
+        { "UHUGEINT", "-1" }
+    };
+
+    [Theory]
+    [MemberData(nameof(OutOfRangeBigIntegers))]
+    public void OutOfRangeBigIntegerThrows(string columnType, string value)
+    {
+        var bigInteger = BigInteger.Parse(value, CultureInfo.InvariantCulture);
+        AssertRejected<OverflowException>(columnType, row => row.AppendValue(bigInteger), "*out of range*");
     }
 
     [Theory]
