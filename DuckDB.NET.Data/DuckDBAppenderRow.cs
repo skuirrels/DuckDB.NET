@@ -1,4 +1,5 @@
 ﻿using DuckDB.NET.Data.DataChunk.Writer;
+using System.Runtime.CompilerServices;
 
 namespace DuckDB.NET.Data;
 
@@ -144,6 +145,18 @@ public class DuckDBAppenderRow : IDuckDBAppenderRow
 
     public IDuckDBAppenderRow AppendValue<T>(IEnumerable<T>? value) => AppendValueInternalClass(value);
 
+    /// <summary>
+    /// Appends a non-generic dictionary to a MAP column. Generic dictionaries bind to
+    /// <see cref="AppendValue{T}(IEnumerable{T})"/>, which also writes MAP columns.
+    /// </summary>
+    /// <remarks>
+    /// This overload has a lower overload resolution priority so that values that are both a generic
+    /// and a non-generic dictionary, such as <see cref="Dictionary{TKey,TValue}"/>, keep binding to
+    /// the generic overload.
+    /// </remarks>
+    [OverloadResolutionPriority(-1)]
+    public IDuckDBAppenderRow AppendValue(IDictionary? value) => AppendValueInternalClass(value);
+
     #endregion
 
     public IDuckDBAppenderRow AppendDefault()
@@ -243,5 +256,16 @@ public interface IDuckDBAppenderRow
     IDuckDBAppenderRow AppendValue(DateTimeOffset? value);
     IDuckDBAppenderRow AppendValue(TimeSpan? value);
     IDuckDBAppenderRow AppendValue<T>(IEnumerable<T>? value);
+    /// <summary>
+    /// Appends a non-generic dictionary to a MAP column. Generic dictionaries bind to
+    /// <see cref="AppendValue{T}(IEnumerable{T})"/>, which also writes MAP columns.
+    /// </summary>
+    /// <remarks>
+    /// This overload has a lower overload resolution priority so that values that are both a generic
+    /// and a non-generic dictionary, such as <see cref="Dictionary{TKey,TValue}"/>, keep binding to
+    /// the generic overload.
+    /// </remarks>
+    [OverloadResolutionPriority(-1)]
+    IDuckDBAppenderRow AppendValue(IDictionary? value);
     IDuckDBAppenderRow AppendDefault();
 }
