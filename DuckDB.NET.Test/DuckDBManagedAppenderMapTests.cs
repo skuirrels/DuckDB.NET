@@ -61,11 +61,11 @@ public class DuckDBManagedAppenderMapTests(DuckDBDatabaseFixture db) : DuckDBTes
 
         using (var appender = Connection.CreateAppender("map_empty_null"))
         {
-            appender.CreateRow().AppendValue(Id(0)).AppendValue(new Dictionary<string, int>()).EndRow();
-            appender.CreateRow().AppendValue(Id(1)).AppendValue((Dictionary<string, int>)null).EndRow();
-            appender.CreateRow().AppendValue(Id(2)).AppendNullValue().EndRow();
-            appender.CreateRow().AppendValue(Id(3)).AppendValue(new Dictionary<string, int> { ["a"] = 1 }).EndRow();
-            appender.CreateRow().AppendValue(Id(4)).AppendValue((IDictionary)null).EndRow();
+            appender.CreateRow().AppendValue(0).AppendValue(new Dictionary<string, int>()).EndRow();
+            appender.CreateRow().AppendValue(1).AppendValue((Dictionary<string, int>)null).EndRow();
+            appender.CreateRow().AppendValue(2).AppendNullValue().EndRow();
+            appender.CreateRow().AppendValue(3).AppendValue(new Dictionary<string, int> { ["a"] = 1 }).EndRow();
+            appender.CreateRow().AppendValue(4).AppendValue((IDictionary)null).EndRow();
         }
 
         Command.CommandText = "SELECT m FROM map_empty_null ORDER BY id";
@@ -137,19 +137,19 @@ public class DuckDBManagedAppenderMapTests(DuckDBDatabaseFixture db) : DuckDBTes
             var readOnlyOnly = new ReadOnlyOnlyDictionary<string, int>(expected);
             var hashtable = new Hashtable { ["one"] = 1, ["two"] = 2 };
 
-            appender.CreateRow().AppendValue(Id(0)).AppendValue(genericInterface).EndRow();
-            appender.CreateRow().AppendValue(Id(1)).AppendValue(readOnlyInterface).EndRow();
-            appender.CreateRow().AppendValue(Id(2)).AppendValue(sorted).EndRow();
-            appender.CreateRow().AppendValue(Id(3)).AppendValue(readOnlyOnly).EndRow();
-            appender.CreateRow().AppendValue(Id(4)).AppendValue(hashtable).EndRow();
+            appender.CreateRow().AppendValue(0).AppendValue(genericInterface).EndRow();
+            appender.CreateRow().AppendValue(1).AppendValue(readOnlyInterface).EndRow();
+            appender.CreateRow().AppendValue(2).AppendValue(sorted).EndRow();
+            appender.CreateRow().AppendValue(3).AppendValue(readOnlyOnly).EndRow();
+            appender.CreateRow().AppendValue(4).AppendValue(hashtable).EndRow();
             appender.AppendRowScoped(expected, static (ref DuckDBAppenderRowWriter row, Dictionary<string, int> map) =>
             {
-                row.AppendValue(Id(5));
+                row.AppendValue(5);
                 row.AppendValue(map);
             });
             appender.AppendRowScoped(hashtable, static (ref DuckDBAppenderRowWriter row, Hashtable map) =>
             {
-                row.AppendValue(Id(6));
+                row.AppendValue(6);
                 row.AppendValue(map);
             });
         }
@@ -218,9 +218,6 @@ public class DuckDBManagedAppenderMapTests(DuckDBDatabaseFixture db) : DuckDBTes
         appender.Invoking(a => a.CreateRow().AppendValue(new Dictionary<string, int> { ["a"] = 1 }))
                 .Should().Throw<InvalidOperationException>();
     }
-
-    // Integer literals bind to the narrowest matching AppendValue overload, so pass ids as int.
-    private static int Id(int id) => id;
 
     private void MapValuesInternal<TKey, TValue>(string keyType, string valueType, Func<Faker, int, TKey> keyGenerator,
                                                  Func<Faker, TValue> valueGenerator, int rowCount = 5_000) where TKey : notnull
