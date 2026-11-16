@@ -1,4 +1,6 @@
+using System.Linq;
 using System.Linq.Expressions;
+using System.Reflection;
 
 namespace DuckDB.NET.Data.Mapping;
 
@@ -119,6 +121,9 @@ internal sealed class PropertyMapping<T, TProperty> : IPropertyMapping<T>
             DateOnly v => row.AppendValue(v),
             TimeOnly v => row.AppendValue(v),
 
+            // MAP columns. The writer picks a typed path from the dictionary's runtime type.
+            IDictionary v => row.AppendValue(v),
+
             _ => throw new NotSupportedException($"Type {typeof(TProperty).Name} is not supported for appending")
         };
     }
@@ -185,6 +190,16 @@ internal static class DuckDBAppenderMapCompiler
         typeof(TimeOnly)
     ];
 
+    private static readonly MethodInfo AppendEnumerableMethod = typeof(IDuckDBAppenderRow)
+        .GetMethods()
+        .Single(method => method.Name == nameof(IDuckDBAppenderRow.AppendValue) &&
+                          method.IsGenericMethodDefinition &&
+                          method.GetParameters()[0].ParameterType.IsGenericType &&
+                          method.GetParameters()[0].ParameterType.GetGenericTypeDefinition() == typeof(IEnumerable<>));
+
+    private static readonly MethodInfo AppendDictionaryMethod =
+        typeof(IDuckDBAppenderRow).GetMethod(nameof(IDuckDBAppenderRow.AppendValue), [typeof(IDictionary)])!;
+
     public static Action<IDuckDBAppenderRow, T> Compile<T>(IReadOnlyList<IPropertyMapping<T>> mappings)
     {
         var row = Expression.Parameter(typeof(IDuckDBAppenderRow), "row");
@@ -218,6 +233,22 @@ internal static class DuckDBAppenderMapCompiler
                 nameof(IDuckDBAppenderRow.AppendValue),
                 Type.EmptyTypes,
                 value);
+        }
+
+        if (propertyType.TryGetDictionaryTypes(out var keyType, out var mapValueType))
+        {
+            // MAP columns: generic dictionaries go through AppendValue<KeyValuePair<TKey, TValue>>.
+            var pairsType = typeof(IEnumerable<>).MakeGenericType(typeof(KeyValuePair<,>).MakeGenericType(keyType, mapValueType));
+
+            return Expression.Call(
+                row,
+                AppendEnumerableMethod.MakeGenericMethod(pairsType.GetGenericArguments()[0]),
+                Expression.Convert(value, pairsType));
+        }
+
+        if (typeof(IDictionary).IsAssignableFrom(propertyType))
+        {
+            return Expression.Call(row, AppendDictionaryMethod, Expression.Convert(value, typeof(IDictionary)));
         }
 
         var underlyingType = Nullable.GetUnderlyingType(propertyType);

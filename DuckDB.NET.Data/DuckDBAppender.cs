@@ -25,6 +25,7 @@ public class DuckDBAppender : IDisposable
     private readonly DuckDBDataChunk dataChunk;
     private readonly VectorDataWriterBase[] vectorWriters;
     private DuckDBAppenderRow? reusableRow;
+    private DuckDBAppenderRow? lastCreatedRow;
 
     internal DuckDBAppender(Native.DuckDBAppender appender, string qualifiedTableName)
     {
@@ -55,10 +56,18 @@ public class DuckDBAppender : IDisposable
     /// Creates an independent row. The caller must append every column and call
     /// <see cref="IDuckDBAppenderRow.EndRow"/>.
     /// </summary>
+    /// <remarks>
+    /// A row that does not receive a value for every column, for example because an append threw,
+    /// is discarded when the next row is started or the appender is closed. Once discarded, the row
+    /// rejects further values.
+    /// </remarks>
     public IDuckDBAppenderRow CreateRow()
     {
         EnsureUsable();
-        return new DuckDBAppenderRow(qualifiedTableName, vectorWriters, PrepareRow(), dataChunk, nativeAppender);
+        DiscardIncompleteCreatedRowBeforeNextRow();
+
+        lastCreatedRow = new DuckDBAppenderRow(qualifiedTableName, vectorWriters, PrepareRow(), dataChunk, nativeAppender);
+        return lastCreatedRow;
     }
 
     /// <summary>
@@ -98,6 +107,7 @@ public class DuckDBAppender : IDisposable
     {
         ArgumentNullException.ThrowIfNull(writeRow);
         EnsureUsable();
+        DiscardIncompleteCreatedRowBeforeNextRow();
 
         DuckDBAppenderRow? row = null;
         isAppendingRow = true;
@@ -136,6 +146,7 @@ public class DuckDBAppender : IDisposable
     {
         ArgumentNullException.ThrowIfNull(writeRow);
         EnsureUsable();
+        DiscardIncompleteCreatedRowBeforeNextRow();
 
         DuckDBAppenderRow? row = null;
         isAppendingRow = true;
@@ -207,6 +218,8 @@ public class DuckDBAppender : IDisposable
         }
 
         rowCount = 0;
+        lastCreatedRow?.Invalidate();
+        lastCreatedRow = null;
         NativeMethods.DataChunks.DuckDBDataChunkReset(dataChunk);
         InitVectorWriters();
     }
@@ -223,6 +236,7 @@ public class DuckDBAppender : IDisposable
 
         try
         {
+            DiscardIncompleteCreatedRow();
             AppendDataChunk();
 
             var state = NativeMethods.Appender.DuckDBAppenderClose(nativeAppender);
@@ -325,6 +339,36 @@ public class DuckDBAppender : IDisposable
                 appendException,
                 finalizationException);
         }
+    }
+
+    private void DiscardIncompleteCreatedRowBeforeNextRow()
+    {
+        if (lastCreatedRow is not { IsComplete: false })
+        {
+            return;
+        }
+
+        DiscardIncompleteCreatedRow();
+
+        // Flush the completed rows so the next row starts in a fresh chunk. Reusing the abandoned
+        // slot is unsafe because writers never clear a validity bit or nested data a partial write
+        // left behind. With the count at zero, PrepareRow recreates the vector writers.
+        AppendDataChunk();
+        rowCount = 0;
+    }
+
+    private void DiscardIncompleteCreatedRow()
+    {
+        // An incomplete row is always the last row of the current chunk because starting another row
+        // discards it first. Its unwritten slots hold uninitialised data, which DuckDB would
+        // read as list offsets or string pointers, so the row must not be flushed.
+        if (lastCreatedRow is { IsComplete: false } row)
+        {
+            rowCount = row.ChunkRowIndex;
+            row.Invalidate();
+        }
+
+        lastCreatedRow = null;
     }
 
     private void EnsureNotAppendingRow()
