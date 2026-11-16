@@ -90,6 +90,13 @@ internal static class TypeExtensions
             return NativeMethods.LogicalType.DuckDBCreateDecimalType(38, 18);
         }
 
+        if (type.TryGetDictionaryTypes(out var keyType, out var valueType))
+        {
+            using var keyLogicalType = keyType.GetLogicalType();
+            using var valueLogicalType = valueType.GetLogicalType();
+            return NativeMethods.LogicalType.DuckDBCreateMapType(keyLogicalType, valueLogicalType);
+        }
+
         if (type.IsAssignableTo(typeof(IList)) && type.IsGenericType)
         {
             var genericTypeParameter = type.GetGenericArguments()[0];
@@ -103,6 +110,75 @@ internal static class TypeExtensions
         }
 
         throw new InvalidOperationException($"Cannot map type {type.FullName} to DuckDBType.");
+    }
+
+    /// <summary>
+    /// Gets the key and value types of a type that implements <see cref="IDictionary{TKey,TValue}"/> or
+    /// <see cref="IReadOnlyDictionary{TKey,TValue}"/>. Returns false when the type implements neither, or
+    /// implements them with conflicting type arguments.
+    /// </summary>
+    public static bool TryGetDictionaryTypes(this Type type, [NotNullWhen(true)] out Type? keyType, [NotNullWhen(true)] out Type? valueType)
+    {
+        keyType = null;
+        valueType = null;
+
+        if (type == typeof(string) || type.IsArray)
+        {
+            return false;
+        }
+
+        foreach (var interfaceType in GetSelfAndInterfaces(type))
+        {
+            if (!interfaceType.IsGenericType)
+            {
+                continue;
+            }
+
+            var definition = interfaceType.GetGenericTypeDefinition();
+            if (definition != typeof(IDictionary<,>) && definition != typeof(IReadOnlyDictionary<,>))
+            {
+                continue;
+            }
+
+            var arguments = interfaceType.GetGenericArguments();
+            if (keyType is not null && (keyType != arguments[0] || valueType != arguments[1]))
+            {
+                keyType = null;
+                valueType = null;
+                return false;
+            }
+
+            keyType = arguments[0];
+            valueType = arguments[1];
+        }
+
+        return keyType is not null;
+    }
+
+    public static bool ImplementsGenericInterface(this Type type, Type genericInterfaceDefinition)
+    {
+        foreach (var interfaceType in GetSelfAndInterfaces(type))
+        {
+            if (interfaceType.IsGenericType && interfaceType.GetGenericTypeDefinition() == genericInterfaceDefinition)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<Type> GetSelfAndInterfaces(Type type)
+    {
+        if (type.IsInterface)
+        {
+            yield return type;
+        }
+
+        foreach (var interfaceType in type.GetInterfaces())
+        {
+            yield return interfaceType;
+        }
     }
 
     public static DuckDBType GetDuckDBType(this Type type) => ClrToDuckDBTypeMap.TryGetValue(type, out var duckDBType) ? duckDBType : DuckDBType.Invalid;

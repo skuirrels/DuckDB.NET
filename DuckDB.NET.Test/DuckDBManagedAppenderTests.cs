@@ -1056,6 +1056,71 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
     }
 
     [Fact]
+    public void CreateRowWhoseAppendThrowsIsDiscardedOnDispose()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderThrownCreatedRow(a INTEGER, m MAP(VARCHAR, INTEGER), l INTEGER[])";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderThrownCreatedRow"))
+        {
+            appender.CreateRow()
+                .AppendValue((int?)1)
+                .AppendValue(new Dictionary<string, int> { ["a"] = 1 })
+                .AppendValue(new[] { 1, 2 })
+                .EndRow();
+
+            // The MAP write throws, leaving the MAP and LIST slots of this row uninitialised.
+            appender.Invoking(a => a.CreateRow().AppendValue((int?)2).AppendValue(new List<int> { 1, 2 }))
+                .Should().Throw<InvalidOperationException>();
+        }
+
+        Command.CommandText = "SELECT a, m['a'], l FROM managedAppenderThrownCreatedRow";
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetInt32(0).Should().Be(1);
+        reader.GetInt32(1).Should().Be(1);
+        reader.GetFieldValue<List<int>>(2).Should().Equal(1, 2);
+        reader.Read().Should().BeFalse();
+    }
+
+    [Fact]
+    public void IncompleteCreateRowIsDiscardedAndAppenderStaysUsable()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderIncompleteCreatedRow(a INTEGER, b VARCHAR, m MAP(VARCHAR, INTEGER))";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderIncompleteCreatedRow"))
+        {
+            appender.CreateRow().AppendValue((int?)1).AppendValue("one").AppendValue(new Dictionary<string, int> { ["a"] = 1 }).EndRow();
+
+            // A NULL in the abandoned row must not leak into the next row.
+            var incomplete = appender.CreateRow().AppendNullValue().AppendValue("two");
+            incomplete.Invoking(row => row.EndRow())
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("*specified only 2 values");
+
+            appender.CreateRow().AppendValue((int?)3).AppendValue("three").AppendValue(new Dictionary<string, int> { ["c"] = 3 }).EndRow();
+
+            incomplete.Invoking(row => row.AppendNullValue()).Should().Throw<IndexOutOfRangeException>();
+
+            appender.AppendRow(row => row.AppendValue((int?)4).AppendValue("four").AppendValue(new Dictionary<string, int> { ["d"] = 4 }));
+
+            // The last row is incomplete when the appender closes.
+            appender.CreateRow().AppendValue((int?)5);
+        }
+
+        Command.CommandText = "SELECT a, b, cardinality(m) FROM managedAppenderIncompleteCreatedRow ORDER BY a";
+        using var reader = Command.ExecuteReader();
+        var rows = new List<(int, string, long)>();
+        while (reader.Read())
+        {
+            rows.Add((reader.GetInt32(0), reader.GetString(1), reader.GetInt64(2)));
+        }
+
+        rows.Should().Equal((1, "one", 1L), (3, "three", 1L), (4, "four", 1L));
+    }
+
+    [Fact]
     public void AppendRowFailureFlushesCompletedRowsAndFaultsAppender()
     {
         Command.CommandText = "CREATE TABLE managedAppenderThrownScopedRow(a INTEGER, b INTEGER[])";
