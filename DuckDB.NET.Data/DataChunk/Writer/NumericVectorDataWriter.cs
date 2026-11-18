@@ -2,34 +2,59 @@
 
 namespace DuckDB.NET.Data.DataChunk.Writer;
 
+// The vector stores sizeof(column type) bytes per row, so only a value of exactly that type is copied as it is; for
+// each overload that is one comparison. Any other integer is converted to the column's type and throws
+// OverflowException when out of range: copying it as it is would write the wrong number of bytes, corrupting the
+// next values of a narrower column or running past the vector. float widens to DOUBLE; double to REAL and floating
+// point to an integer column need an explicit conversion by the caller.
 internal sealed unsafe class NumericVectorDataWriter(IntPtr vector, void* vectorData, DuckDBType columnType) : VectorDataWriterBase(vector, vectorData, columnType)
 {
-    internal override bool AppendNumeric<T>(T value, ulong rowIndex)
+    internal override bool AppendNumeric(sbyte value, ulong rowIndex) => ColumnType == DuckDBType.TinyInt ? AppendValueInternal(value, rowIndex) : AppendInteger(value, rowIndex);
+
+    internal override bool AppendNumeric(short value, ulong rowIndex) => ColumnType == DuckDBType.SmallInt ? AppendValueInternal(value, rowIndex) : AppendInteger(value, rowIndex);
+
+    internal override bool AppendNumeric(int value, ulong rowIndex) => ColumnType == DuckDBType.Integer ? AppendValueInternal(value, rowIndex) : AppendInteger(value, rowIndex);
+
+    internal override bool AppendNumeric(long value, ulong rowIndex) => ColumnType == DuckDBType.BigInt ? AppendValueInternal(value, rowIndex) : AppendInteger(value, rowIndex);
+
+    internal override bool AppendNumeric(byte value, ulong rowIndex) => ColumnType == DuckDBType.UnsignedTinyInt ? AppendValueInternal(value, rowIndex) : AppendInteger(value, rowIndex);
+
+    internal override bool AppendNumeric(ushort value, ulong rowIndex) => ColumnType == DuckDBType.UnsignedSmallInt ? AppendValueInternal(value, rowIndex) : AppendInteger(value, rowIndex);
+
+    internal override bool AppendNumeric(uint value, ulong rowIndex) => ColumnType == DuckDBType.UnsignedInteger ? AppendValueInternal(value, rowIndex) : AppendInteger(value, rowIndex);
+
+    internal override bool AppendNumeric(ulong value, ulong rowIndex) => ColumnType == DuckDBType.UnsignedBigInt ? AppendValueInternal(value, rowIndex) : AppendInteger(value, rowIndex);
+
+    internal override bool AppendNumeric(float value, ulong rowIndex) => ColumnType switch
     {
-        // The vector stores sizeof(column type) bytes per row, so only a value of exactly that type can be
-        // copied as is. For a given T the JIT reduces this check to a single comparison.
-        if (IsStorageType<T>(ColumnType))
-        {
-            return AppendValueInternal(value, rowIndex);
-        }
+        DuckDBType.Float => AppendValueInternal(value, rowIndex),
+        DuckDBType.Double => AppendValueInternal((double)value, rowIndex), // exact
+        _ => throw Mismatch<float>()
+    };
 
-        return AppendConverted(value, rowIndex);
-    }
+    internal override bool AppendNumeric(double value, ulong rowIndex) => ColumnType == DuckDBType.Double ? AppendValueInternal(value, rowIndex) : throw Mismatch<double>();
 
+    // BigInteger converts like the other integers, with a range check for every column: OverflowException for the
+    // narrower columns, ArgumentOutOfRangeException (from DuckDBHugeInt and DuckDBUHugeInt) for HUGEINT and UHUGEINT.
+    // A column that is not a number, such as VARINT, refuses it.
     internal override bool AppendBigInteger(BigInteger value, ulong rowIndex)
     {
         switch (ColumnType)
         {
-            case DuckDBType.HugeInt when value >= (BigInteger)Int128.MinValue && value <= (BigInteger)Int128.MaxValue:
+            // The constructors throw ArgumentOutOfRangeException for a value outside the column's range.
+            case DuckDBType.HugeInt:
                 return AppendValueInternal(new DuckDBHugeInt(value), rowIndex);
-            case DuckDBType.UnsignedHugeInt when value.Sign >= 0 && value <= (BigInteger)UInt128.MaxValue:
+            case DuckDBType.UnsignedHugeInt:
                 return AppendValueInternal(new DuckDBUHugeInt(value), rowIndex);
-            case DuckDBType.HugeInt or DuckDBType.UnsignedHugeInt:
-                throw OutOfRange(value);
             case DuckDBType.Float:
                 return AppendValueInternal((float)value, rowIndex);
             case DuckDBType.Double:
                 return AppendValueInternal((double)value, rowIndex);
+        }
+
+        if (!IsIntegerColumn(ColumnType))
+        {
+            return base.AppendBigInteger(value, rowIndex);
         }
 
         if (value < (BigInteger)Int128.MinValue || value > (BigInteger)Int128.MaxValue)
@@ -40,65 +65,46 @@ internal sealed unsafe class NumericVectorDataWriter(IntPtr vector, void* vector
         return AppendIntegral((Int128)value, rowIndex);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool IsStorageType<T>(DuckDBType columnType)
-    {
-        if (typeof(T) == typeof(sbyte)) return columnType == DuckDBType.TinyInt;
-        if (typeof(T) == typeof(short)) return columnType == DuckDBType.SmallInt;
-        if (typeof(T) == typeof(int)) return columnType == DuckDBType.Integer;
-        if (typeof(T) == typeof(long)) return columnType == DuckDBType.BigInt;
-        if (typeof(T) == typeof(byte)) return columnType == DuckDBType.UnsignedTinyInt;
-        if (typeof(T) == typeof(ushort)) return columnType == DuckDBType.UnsignedSmallInt;
-        if (typeof(T) == typeof(uint)) return columnType == DuckDBType.UnsignedInteger;
-        if (typeof(T) == typeof(ulong)) return columnType == DuckDBType.UnsignedBigInt;
-        if (typeof(T) == typeof(float)) return columnType == DuckDBType.Float;
-        if (typeof(T) == typeof(double)) return columnType == DuckDBType.Double;
-        return false;
-    }
+    // An Int128 has the bytes of a HUGEINT and a UInt128 those of a UHUGEINT, on a little-endian machine, so they are
+    // stored as they are, in either of the two columns, like the other integers: an Int128 of -1 in a UHUGEINT column is
+    // 2^128 - 1, as a long of -1 in a UBIGINT column is 2^64 - 1. Any other column refuses them: the 16 bytes would
+    // overwrite the next value of a narrower column, or run past the vector.
+    internal override bool AppendNumeric(Int128 value, ulong rowIndex) => ColumnType is DuckDBType.HugeInt or DuckDBType.UnsignedHugeInt
+        ? AppendValueInternal(value, rowIndex)
+        : base.AppendNumeric(value, rowIndex);
 
+    internal override bool AppendNumeric(UInt128 value, ulong rowIndex) => ColumnType is DuckDBType.HugeInt or DuckDBType.UnsignedHugeInt
+        ? AppendValueInternal(value, rowIndex)
+        : base.AppendNumeric(value, rowIndex);
+
+    // Kept out of line so the matching-type path above stays small enough to inline.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private bool AppendConverted<T>(T value, ulong rowIndex) where T : unmanaged
+    private bool AppendInteger(Int128 value, ulong rowIndex) => ColumnType switch
     {
-        if (typeof(T) == typeof(float) || typeof(T) == typeof(double))
-        {
-            // Widening float to DOUBLE is exact. Narrowing to REAL or converting to an integer can
-            // silently lose data, so those need an explicit conversion by the caller.
-            if (typeof(T) == typeof(float) && ColumnType == DuckDBType.Double)
-            {
-                return AppendValueInternal((double)Unsafe.As<T, float>(ref value), rowIndex);
-            }
+        DuckDBType.Float => AppendValueInternal((float)value, rowIndex),
+        DuckDBType.Double => AppendValueInternal((double)value, rowIndex),
+        _ => AppendIntegral(value, rowIndex)
+    };
 
-            throw Mismatch<T>();
-        }
-
-        var integral = ToInt128(value);
-
-        return ColumnType switch
-        {
-            DuckDBType.Float => AppendValueInternal((float)integral, rowIndex),
-            DuckDBType.Double => AppendValueInternal((double)integral, rowIndex),
-            _ => AppendIntegral(integral, rowIndex)
-        };
-    }
-
-    private bool AppendIntegral(Int128 value, ulong rowIndex)
+    private bool AppendIntegral(Int128 value, ulong rowIndex) => ColumnType switch
     {
-        return ColumnType switch
-        {
-            DuckDBType.TinyInt => AppendValueInternal(Narrow<sbyte>(value), rowIndex),
-            DuckDBType.SmallInt => AppendValueInternal(Narrow<short>(value), rowIndex),
-            DuckDBType.Integer => AppendValueInternal(Narrow<int>(value), rowIndex),
-            DuckDBType.BigInt => AppendValueInternal(Narrow<long>(value), rowIndex),
-            DuckDBType.UnsignedTinyInt => AppendValueInternal(Narrow<byte>(value), rowIndex),
-            DuckDBType.UnsignedSmallInt => AppendValueInternal(Narrow<ushort>(value), rowIndex),
-            DuckDBType.UnsignedInteger => AppendValueInternal(Narrow<uint>(value), rowIndex),
-            DuckDBType.UnsignedBigInt => AppendValueInternal(Narrow<ulong>(value), rowIndex),
-            DuckDBType.HugeInt => AppendValueInternal(new DuckDBHugeInt((ulong)value, (long)(value >> 64)), rowIndex),
-            DuckDBType.UnsignedHugeInt when value >= 0 => AppendValueInternal(new DuckDBUHugeInt((ulong)value, (ulong)(value >> 64)), rowIndex),
-            DuckDBType.UnsignedHugeInt => throw OutOfRange(value),
-            _ => throw new InvalidOperationException($"Cannot write an integer to {ColumnType} column")
-        };
-    }
+        DuckDBType.TinyInt => AppendValueInternal(Narrow<sbyte>(value), rowIndex),
+        DuckDBType.SmallInt => AppendValueInternal(Narrow<short>(value), rowIndex),
+        DuckDBType.Integer => AppendValueInternal(Narrow<int>(value), rowIndex),
+        DuckDBType.BigInt => AppendValueInternal(Narrow<long>(value), rowIndex),
+        DuckDBType.UnsignedTinyInt => AppendValueInternal(Narrow<byte>(value), rowIndex),
+        DuckDBType.UnsignedSmallInt => AppendValueInternal(Narrow<ushort>(value), rowIndex),
+        DuckDBType.UnsignedInteger => AppendValueInternal(Narrow<uint>(value), rowIndex),
+        DuckDBType.UnsignedBigInt => AppendValueInternal(Narrow<ulong>(value), rowIndex),
+        DuckDBType.HugeInt => AppendValueInternal(value, rowIndex),
+        DuckDBType.UnsignedHugeInt when value >= 0 => AppendValueInternal((UInt128)value, rowIndex),
+        DuckDBType.UnsignedHugeInt => throw OutOfRange(value),
+        _ => throw new InvalidOperationException($"Cannot write an integer to {ColumnType} column")
+    };
+
+    private static bool IsIntegerColumn(DuckDBType type) => type is DuckDBType.TinyInt or DuckDBType.SmallInt or DuckDBType.Integer
+        or DuckDBType.BigInt or DuckDBType.UnsignedTinyInt or DuckDBType.UnsignedSmallInt or DuckDBType.UnsignedInteger
+        or DuckDBType.UnsignedBigInt;
 
     private TTarget Narrow<TTarget>(Int128 value) where TTarget : unmanaged, IBinaryInteger<TTarget>, IMinMaxValue<TTarget>
     {
@@ -108,21 +114,6 @@ internal sealed unsafe class NumericVectorDataWriter(IntPtr vector, void* vector
         }
 
         return TTarget.CreateTruncating(value);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Int128 ToInt128<T>(T value) where T : unmanaged
-    {
-        if (typeof(T) == typeof(sbyte)) return Unsafe.As<T, sbyte>(ref value);
-        if (typeof(T) == typeof(short)) return Unsafe.As<T, short>(ref value);
-        if (typeof(T) == typeof(int)) return Unsafe.As<T, int>(ref value);
-        if (typeof(T) == typeof(long)) return Unsafe.As<T, long>(ref value);
-        if (typeof(T) == typeof(byte)) return Unsafe.As<T, byte>(ref value);
-        if (typeof(T) == typeof(ushort)) return Unsafe.As<T, ushort>(ref value);
-        if (typeof(T) == typeof(uint)) return Unsafe.As<T, uint>(ref value);
-        if (typeof(T) == typeof(ulong)) return Unsafe.As<T, ulong>(ref value);
-
-        throw new InvalidOperationException($"{typeof(T).Name} is not an integer type");
     }
 
     private OverflowException OutOfRange<TValue>(TValue value) =>

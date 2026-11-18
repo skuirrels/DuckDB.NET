@@ -41,8 +41,17 @@ public ref struct DuckDBAppenderRowWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void AppendValue(Guid? value) => row.AppendValue(value);
 
+    // Lowered for the reason given on DuckDBAppenderRow.AppendValue(BigInteger?).
+    [OverloadResolutionPriority(-1)]
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void AppendValue(BigInteger? value) => row.AppendValue(value);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void AppendValue(Int128? value) => row.AppendValue(value);
+
+    [OverloadResolutionPriority(-1)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void AppendValue(UInt128? value) => row.AppendValue(value);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void AppendValue(sbyte? value) => row.AppendValue(value);

@@ -49,6 +49,24 @@ public class DuckDBDataReaderListTests(DuckDBDatabaseFixture db) : DuckDBTestBas
         list.Should().BeEquivalentTo(new List<int> { 1, 2, 3 });
     }
 
+    [Theory]
+    [InlineData("SELECT [1, 2, 3];")]
+    [InlineData("SELECT ['a', 'b'];")]
+    [InlineData("SELECT [1, 2, 3]::INTEGER[3];")]
+    public void ReadListAsUntypedTargetIsNotSupported(string query)
+    {
+        Command.CommandText = query;
+        using var reader = Command.ExecuteReader();
+        reader.Read();
+        reader.Invoking(r => r.GetFieldValue<List<object>>(0)).Should().Throw<InvalidCastException>();
+        reader.Invoking(r => r.GetFieldValue<System.Collections.ArrayList>(0)).Should().Throw<InvalidCastException>()
+              .WithMessage("Cannot read column * as ArrayList*");
+
+        // A generic collection that is not an IList.
+        reader.Invoking(r => r.GetFieldValue<HashSet<int>>(0)).Should().Throw<ArgumentException>()
+              .WithMessage("Cannot read column * as HashSet*: it is not an IList.");
+    }
+
     [Fact]
     public void ReadMultipleListOfIntegers()
     {

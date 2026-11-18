@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 
 namespace DuckDB.NET.Data.DataChunk.Writer;
@@ -9,7 +10,7 @@ internal unsafe class VectorDataWriterBase(IntPtr vector, void* vectorData, Duck
     internal IntPtr Vector => vector;
     internal DuckDBType ColumnType => columnType;
 
-    public void WriteNull(ulong rowIndex)
+    public virtual void WriteNull(ulong rowIndex)
     {
         if (validity == default)
         {
@@ -17,14 +18,23 @@ internal unsafe class VectorDataWriterBase(IntPtr vector, void* vectorData, Duck
             validity = NativeMethods.Vectors.DuckDBVectorGetValidity(Vector);
         }
 
-        NativeMethods.ValidityMask.DuckDBValiditySetRowValidity(validity, rowIndex, false);
+        ValidityMask.SetInvalid(validity, rowIndex);
     }
 
-    private void WriteValueFallback<T>(T value, ulong rowIndex)
+    public void WriteValue<T>(T value, ulong rowIndex)
     {
         if (value == null)
         {
             WriteNull(rowIndex);
+            return;
+        }
+
+        // Both tests are constants for the JIT, so a T that is not a nullable value type does not keep this branch.
+        // A nullable value type must not reach the switch below: testing its type there boxes it, for every value.
+        if (typeof(T).IsValueType && default(T) is null)
+        {
+            WriteNullable(ref value, rowIndex);
+            MarkValid(rowIndex);
             return;
         }
 
@@ -48,7 +58,7 @@ internal unsafe class VectorDataWriterBase(IntPtr vector, void* vectorData, Duck
             decimal val => AppendDecimal(val, rowIndex),
             BigInteger val => AppendBigInteger(val, rowIndex),
 
-            Enum val => AppendEnum(val, rowIndex),
+            Enum val => AppendEnum(EnumValue.ToUInt64(val), rowIndex),
 
             string val => AppendString(val, rowIndex),
             Guid val => AppendGuid(val, rowIndex),
@@ -59,297 +69,78 @@ internal unsafe class VectorDataWriterBase(IntPtr vector, void* vectorData, Duck
             DateOnly val => AppendDateOnly(val, rowIndex),
             TimeOnly val => AppendTimeOnly(val, rowIndex),
             DateTimeOffset val => AppendDateTimeOffset(val, rowIndex),
+
+            // Last of the value types: for a T that is not a value type, such as object, every value of a
+            // type above is tested against no more types than before.
+            Int128 val => AppendNumeric(val, rowIndex),
+            UInt128 val => AppendNumeric(val, rowIndex),
+
             ICollection val => AppendCollection(val, rowIndex),
             // Some IReadOnlyDictionary<TKey, TValue> implementations are not an ICollection.
             IEnumerable val when columnType == DuckDBType.Map => AppendMap(val, rowIndex),
             _ => ThrowException<T>()
         };
+
+        MarkValid(rowIndex);
     }
 
+    // A value can land where a NULL was written before: a collection that failed part way can have
+    // marked some of its items NULL, and retrying it writes the same items again.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void WriteValue<T>(T value, ulong rowIndex)
+    internal void MarkValid(ulong rowIndex)
     {
-        if (typeof(T) == typeof(bool))
+        if (validity != default)
         {
-            _ = AppendBool(Unsafe.As<T, bool>(ref value), rowIndex);
-            return;
+            ValidityMask.SetValid(validity, rowIndex);
         }
+    }
 
-        if (typeof(T) == typeof(bool?))
+    // T is a nullable value type and the value is not null. A test of T against a type is a constant for the JIT,
+    // so one line is left, which calls the method that the switch in WriteValue calls for the underlying type.
+    // The lines are in the order of that switch.
+    private void WriteNullable<T>(ref T value, ulong rowIndex)
+    {
+        if (typeof(T) == typeof(bool?)) AppendBool(Unsafe.As<T, bool?>(ref value).GetValueOrDefault(), rowIndex);
+
+        else if (typeof(T) == typeof(sbyte?)) AppendNumeric(Unsafe.As<T, sbyte?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(short?)) AppendNumeric(Unsafe.As<T, short?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(int?)) AppendNumeric(Unsafe.As<T, int?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(long?)) AppendNumeric(Unsafe.As<T, long?>(ref value).GetValueOrDefault(), rowIndex);
+
+        else if (typeof(T) == typeof(byte?)) AppendNumeric(Unsafe.As<T, byte?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(ushort?)) AppendNumeric(Unsafe.As<T, ushort?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(uint?)) AppendNumeric(Unsafe.As<T, uint?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(ulong?)) AppendNumeric(Unsafe.As<T, ulong?>(ref value).GetValueOrDefault(), rowIndex);
+
+        else if (typeof(T) == typeof(Int128?)) AppendNumeric(Unsafe.As<T, Int128?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(UInt128?)) AppendNumeric(Unsafe.As<T, UInt128?>(ref value).GetValueOrDefault(), rowIndex);
+
+        else if (typeof(T) == typeof(float?)) AppendNumeric(Unsafe.As<T, float?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(double?)) AppendNumeric(Unsafe.As<T, double?>(ref value).GetValueOrDefault(), rowIndex);
+
+        else if (typeof(T) == typeof(decimal?)) AppendDecimal(Unsafe.As<T, decimal?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(BigInteger?)) AppendBigInteger(Unsafe.As<T, BigInteger?>(ref value).GetValueOrDefault(), rowIndex);
+
+        else if (typeof(T) == typeof(Guid?)) AppendGuid(Unsafe.As<T, Guid?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(DateTime?)) AppendDateTime(Unsafe.As<T, DateTime?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(TimeSpan?)) AppendTimeSpan(Unsafe.As<T, TimeSpan?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(DuckDBDateOnly?)) AppendDateOnly(Unsafe.As<T, DuckDBDateOnly?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(DuckDBTimeOnly?)) AppendTimeOnly(Unsafe.As<T, DuckDBTimeOnly?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(DateOnly?)) AppendDateOnly(Unsafe.As<T, DateOnly?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(TimeOnly?)) AppendTimeOnly(Unsafe.As<T, TimeOnly?>(ref value).GetValueOrDefault(), rowIndex);
+        else if (typeof(T) == typeof(DateTimeOffset?)) AppendDateTimeOffset(Unsafe.As<T, DateTimeOffset?>(ref value).GetValueOrDefault(), rowIndex);
+
+        // What is left of the switch for a value type: an enum, a struct that is a collection, and the error.
+        // These are boxed, as they were.
+        else
         {
-            var typedValue = Unsafe.As<T, bool?>(ref value);
-            if (typedValue.HasValue) _ = AppendBool(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
+            _ = (object)value! switch
+            {
+                Enum val => AppendEnum(EnumValue.ToUInt64(val), rowIndex),
+                ICollection val => AppendCollection(val, rowIndex),
+                _ => ThrowException<T>()
+            };
         }
-
-        if (typeof(T) == typeof(sbyte))
-        {
-            _ = AppendNumeric(Unsafe.As<T, sbyte>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(sbyte?))
-        {
-            var typedValue = Unsafe.As<T, sbyte?>(ref value);
-            if (typedValue.HasValue) _ = AppendNumeric(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(short))
-        {
-            _ = AppendNumeric(Unsafe.As<T, short>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(short?))
-        {
-            var typedValue = Unsafe.As<T, short?>(ref value);
-            if (typedValue.HasValue) _ = AppendNumeric(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(int))
-        {
-            _ = AppendNumeric(Unsafe.As<T, int>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(int?))
-        {
-            var typedValue = Unsafe.As<T, int?>(ref value);
-            if (typedValue.HasValue) _ = AppendNumeric(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(long))
-        {
-            _ = AppendNumeric(Unsafe.As<T, long>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(long?))
-        {
-            var typedValue = Unsafe.As<T, long?>(ref value);
-            if (typedValue.HasValue) _ = AppendNumeric(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(byte))
-        {
-            _ = AppendNumeric(Unsafe.As<T, byte>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(byte?))
-        {
-            var typedValue = Unsafe.As<T, byte?>(ref value);
-            if (typedValue.HasValue) _ = AppendNumeric(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(ushort))
-        {
-            _ = AppendNumeric(Unsafe.As<T, ushort>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(ushort?))
-        {
-            var typedValue = Unsafe.As<T, ushort?>(ref value);
-            if (typedValue.HasValue) _ = AppendNumeric(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(uint))
-        {
-            _ = AppendNumeric(Unsafe.As<T, uint>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(uint?))
-        {
-            var typedValue = Unsafe.As<T, uint?>(ref value);
-            if (typedValue.HasValue) _ = AppendNumeric(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(ulong))
-        {
-            _ = AppendNumeric(Unsafe.As<T, ulong>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(ulong?))
-        {
-            var typedValue = Unsafe.As<T, ulong?>(ref value);
-            if (typedValue.HasValue) _ = AppendNumeric(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(float))
-        {
-            _ = AppendNumeric(Unsafe.As<T, float>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(float?))
-        {
-            var typedValue = Unsafe.As<T, float?>(ref value);
-            if (typedValue.HasValue) _ = AppendNumeric(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(double))
-        {
-            _ = AppendNumeric(Unsafe.As<T, double>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(double?))
-        {
-            var typedValue = Unsafe.As<T, double?>(ref value);
-            if (typedValue.HasValue) _ = AppendNumeric(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(decimal))
-        {
-            _ = AppendDecimal(Unsafe.As<T, decimal>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(decimal?))
-        {
-            var typedValue = Unsafe.As<T, decimal?>(ref value);
-            if (typedValue.HasValue) _ = AppendDecimal(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(BigInteger))
-        {
-            _ = AppendBigInteger(Unsafe.As<T, BigInteger>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(BigInteger?))
-        {
-            var typedValue = Unsafe.As<T, BigInteger?>(ref value);
-            if (typedValue.HasValue) _ = AppendBigInteger(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(string))
-        {
-            var typedValue = Unsafe.As<T, string?>(ref value);
-            if (typedValue is not null) _ = AppendString(typedValue, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(Guid))
-        {
-            _ = AppendGuid(Unsafe.As<T, Guid>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(Guid?))
-        {
-            var typedValue = Unsafe.As<T, Guid?>(ref value);
-            if (typedValue.HasValue) _ = AppendGuid(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(DateTime))
-        {
-            _ = AppendDateTime(Unsafe.As<T, DateTime>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(DateTime?))
-        {
-            var typedValue = Unsafe.As<T, DateTime?>(ref value);
-            if (typedValue.HasValue) _ = AppendDateTime(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(TimeSpan))
-        {
-            _ = AppendTimeSpan(Unsafe.As<T, TimeSpan>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(TimeSpan?))
-        {
-            var typedValue = Unsafe.As<T, TimeSpan?>(ref value);
-            if (typedValue.HasValue) _ = AppendTimeSpan(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(DuckDBDateOnly))
-        {
-            _ = AppendDateOnly(Unsafe.As<T, DuckDBDateOnly>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(DuckDBDateOnly?))
-        {
-            var typedValue = Unsafe.As<T, DuckDBDateOnly?>(ref value);
-            if (typedValue.HasValue) _ = AppendDateOnly(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(DuckDBTimeOnly))
-        {
-            _ = AppendTimeOnly(Unsafe.As<T, DuckDBTimeOnly>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(DuckDBTimeOnly?))
-        {
-            var typedValue = Unsafe.As<T, DuckDBTimeOnly?>(ref value);
-            if (typedValue.HasValue) _ = AppendTimeOnly(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(DateOnly))
-        {
-            _ = AppendDateOnly(Unsafe.As<T, DateOnly>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(DateOnly?))
-        {
-            var typedValue = Unsafe.As<T, DateOnly?>(ref value);
-            if (typedValue.HasValue) _ = AppendDateOnly(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(TimeOnly))
-        {
-            _ = AppendTimeOnly(Unsafe.As<T, TimeOnly>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(TimeOnly?))
-        {
-            var typedValue = Unsafe.As<T, TimeOnly?>(ref value);
-            if (typedValue.HasValue) _ = AppendTimeOnly(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(DateTimeOffset))
-        {
-            _ = AppendDateTimeOffset(Unsafe.As<T, DateTimeOffset>(ref value), rowIndex);
-            return;
-        }
-
-        if (typeof(T) == typeof(DateTimeOffset?))
-        {
-            var typedValue = Unsafe.As<T, DateTimeOffset?>(ref value);
-            if (typedValue.HasValue) _ = AppendDateTimeOffset(typedValue.Value, rowIndex); else WriteNull(rowIndex);
-            return;
-        }
-
-        WriteValueFallback(value, rowIndex);
     }
 
     internal virtual bool AppendBool(bool value, ulong rowIndex) => ThrowException<bool>();
@@ -376,16 +167,43 @@ internal unsafe class VectorDataWriterBase(IntPtr vector, void* vectorData, Duck
 
     internal virtual bool AppendDateTimeOffset(DateTimeOffset value, ulong rowIndex) => ThrowException<DateTimeOffset>();
 
-    internal virtual bool AppendNumeric<T>(T value, ulong rowIndex) where T : unmanaged => ThrowException<T>();
+    // One overload per numeric type instead of a generic virtual method: a generic virtual method is looked up
+    // at run time on every call, which costs several times more than storing the value.
+    internal virtual bool AppendNumeric(sbyte value, ulong rowIndex) => ThrowException<sbyte>();
+
+    internal virtual bool AppendNumeric(short value, ulong rowIndex) => ThrowException<short>();
+
+    internal virtual bool AppendNumeric(int value, ulong rowIndex) => ThrowException<int>();
+
+    internal virtual bool AppendNumeric(long value, ulong rowIndex) => ThrowException<long>();
+
+    internal virtual bool AppendNumeric(byte value, ulong rowIndex) => ThrowException<byte>();
+
+    internal virtual bool AppendNumeric(ushort value, ulong rowIndex) => ThrowException<ushort>();
+
+    internal virtual bool AppendNumeric(uint value, ulong rowIndex) => ThrowException<uint>();
+
+    internal virtual bool AppendNumeric(ulong value, ulong rowIndex) => ThrowException<ulong>();
+
+    internal virtual bool AppendNumeric(Int128 value, ulong rowIndex) => ThrowException<Int128>();
+
+    internal virtual bool AppendNumeric(UInt128 value, ulong rowIndex) => ThrowException<UInt128>();
+
+    internal virtual bool AppendNumeric(float value, ulong rowIndex) => ThrowException<float>();
+
+    internal virtual bool AppendNumeric(double value, ulong rowIndex) => ThrowException<double>();
 
     internal virtual bool AppendBigInteger(BigInteger value, ulong rowIndex) => ThrowException<BigInteger>();
 
-    internal virtual bool AppendEnum<TEnum>(TEnum value, ulong rowIndex) where TEnum : Enum => ThrowException<TEnum>();
+    // The number of an enum value (EnumValue). The message names System.Enum and not the type of the enum, as it did
+    // when every enum was boxed on its way here.
+    internal virtual bool AppendEnum(ulong value, ulong rowIndex) => ThrowException<Enum>();
 
     internal virtual bool AppendCollection(ICollection value, ulong rowIndex) => ThrowException<ICollection>();
 
     internal virtual bool AppendMap(IEnumerable value, ulong rowIndex) => ThrowException<IEnumerable>();
 
+    [DoesNotReturn]
     private bool ThrowException<T>()
     {
         throw new InvalidOperationException($"Cannot write {typeof(T).Name} to {columnType} column");
@@ -398,9 +216,11 @@ internal unsafe class VectorDataWriterBase(IntPtr vector, void* vectorData, Duck
         return true;
     }
 
-    internal void InitializeWriter()
+    internal virtual void InitializeWriter()
     {
-        validity = default;
+        // Fetched again rather than cleared: when a list grows, DuckDB keeps the NULLs already marked in
+        // its items, and a retried row must still be able to mark them valid. Null when nothing is NULL.
+        validity = NativeMethods.Vectors.DuckDBVectorGetValidity(Vector);
         vectorData = NativeMethods.Vectors.DuckDBVectorGetData(Vector);
     }
 

@@ -145,6 +145,14 @@ public class DuckDBManagedAppenderNumericConversionTests(DuckDBDatabaseFixture d
     public void OutOfRangeBigIntegerThrows(string columnType, string value)
     {
         var bigInteger = BigInteger.Parse(value, CultureInfo.InvariantCulture);
+
+        // HUGEINT and UHUGEINT keep upstream's ArgumentOutOfRangeException from DuckDBHugeInt and DuckDBUHugeInt.
+        if (columnType is "HUGEINT" or "UHUGEINT")
+        {
+            AssertRejected<ArgumentOutOfRangeException>(columnType, row => row.AppendValue(bigInteger), "*value must be between*");
+            return;
+        }
+
         AssertRejected<OverflowException>(columnType, row => row.AppendValue(bigInteger), "*out of range*");
     }
 
@@ -191,8 +199,9 @@ public class DuckDBManagedAppenderNumericConversionTests(DuckDBDatabaseFixture d
             appender.CreateRow().AppendValue(value).EndRow();
         }
 
+        // UHUGEINT is read as UInt128 by default from 2.0.
         Command.CommandText = "SELECT v FROM uhugeint_values";
-        Command.ExecuteScalar().Should().Be(value);
+        Command.ExecuteScalar().Should().Be((UInt128)value);
     }
 
     private void AssertRejected<TException>(string columnType, Action<IDuckDBAppenderRow> append, string message) where TException : Exception

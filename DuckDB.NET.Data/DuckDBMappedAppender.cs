@@ -1,5 +1,4 @@
 using DuckDB.NET.Data.Mapping;
-using System.Threading;
 
 namespace DuckDB.NET.Data;
 
@@ -10,32 +9,30 @@ namespace DuckDB.NET.Data;
 /// <typeparam name="TMap">The AppenderMap type defining the mappings</typeparam>
 public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppenderMap<T>, new()
 {
-    private static readonly Lazy<CompiledAppenderMap> CompiledMap =
-        new(CreateCompiledMap, LazyThreadSafetyMode.ExecutionAndPublication);
-
     private readonly DuckDBAppender appender;
-    private readonly Action<IDuckDBAppenderRow, T> writeRecord;
+    private readonly IPropertyMapping<T>[] mappings;
 
     internal DuckDBMappedAppender(DuckDBAppender appender)
     {
         this.appender = appender;
-        var compiledMap = CompiledMap.Value;
-        var mappings = compiledMap.Mappings;
-        writeRecord = compiledMap.WriteRecord;
+        var classMap = new TMap();
+
+        // Get mappings as List<T> to avoid interface enumerator boxing
+        mappings = classMap.PropertyMappings.ToArray();
 
         // Validate mappings match the table structure
-        if (mappings.Count == 0)
+        if (mappings.Length == 0)
         {
             throw new InvalidOperationException($"AppenderMap {typeof(TMap).Name} has no property mappings defined");
         }
 
         var columnTypes = appender.LogicalTypes;
-        if (mappings.Count != columnTypes.Count)
+        if (mappings.Length != columnTypes.Count)
         {
-            throw new InvalidOperationException($"AppenderMap {typeof(TMap).Name} has {mappings.Count} mappings but table has {columnTypes.Count} columns");
+            throw new InvalidOperationException($"AppenderMap {typeof(TMap).Name} has {mappings.Length} mappings but table has {columnTypes.Count} columns");
         }
 
-        for (int index = 0; index < mappings.Count; index++)
+        for (int index = 0; index < mappings.Length; index++)
         {
             var mapping = mappings[index];
 
@@ -46,7 +43,6 @@ public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppe
 
             var columnType = NativeMethods.LogicalType.DuckDBGetTypeId(columnTypes[index]);
 
-            // Only types that are not scalars need the reflection-based dictionary check.
             if (mapping.PropertyType.UnderlyingTypeOrSelf().GetDuckDBType() == DuckDBType.Invalid &&
                 IsDictionaryType(mapping.PropertyType))
             {
@@ -54,15 +50,14 @@ public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppe
                 continue;
             }
 
-            var expectedType = GetExpectedDuckDBType(mapping.PropertyType);
+            var acceptedTypes = GetAcceptedDuckDBTypes(mapping.PropertyType);
 
-            if (expectedType != columnType)
+            if (Array.IndexOf(acceptedTypes, columnType) < 0)
             {
                 throw new InvalidOperationException(
-                    $"Type mismatch at column index {index}: Mapped type is {mapping.PropertyType.Name} (expected DuckDB type: {expectedType}) but actual column type is {columnType}");
+                    $"Type mismatch at column index {index}: Mapped type is {mapping.PropertyType.UnderlyingTypeOrSelf().Name} (expected DuckDB type: {string.Join(" or ", acceptedTypes)}) but actual column type is {columnType}");
             }
         }
-
     }
 
     /// <summary>
@@ -84,22 +79,48 @@ public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppe
 
     private void AppendRecord(T record)
     {
-        if (record == null)
+        if (record is null)
         {
             throw new ArgumentNullException(nameof(record));
         }
 
-        appender.AppendRow(record, writeRecord);
+        // Pass both values as state so the callback does not capture per record.
+        appender.AppendRow((Record: record, Mappings: mappings), static (row, state) =>
+        {
+            var mappings = state.Mappings;
+
+            for (var index = 0; index < mappings.Length; index++)
+            {
+                mappings[index].AppendToRow((DuckDBAppenderRow)row, state.Record);
+            }
+        });
     }
 
-    private static DuckDBType GetExpectedDuckDBType(Type type)
+    // The column types a property of the given type can be appended to.
+    private static DuckDBType[] GetAcceptedDuckDBTypes(Type type)
     {
-        var duckDBType = type.UnderlyingTypeOrSelf().GetDuckDBType();
+        var underlyingType = type.UnderlyingTypeOrSelf();
+
+        // BigInteger is accepted for both 128-bit integer columns. The writer stores the value signed or
+        // unsigned to match the column, and rejects a value outside the column's range when it is appended.
+        // Int128 and UInt128 are the exact types of the two columns and, like the other integers, are accepted for
+        // their own column only (ClrToDuckDBTypeMap): the writer stores their bytes without a check.
+        if (underlyingType == typeof(BigInteger))
+        {
+            return [DuckDBType.HugeInt, DuckDBType.UnsignedHugeInt];
+        }
+
+        var duckDBType = underlyingType.GetDuckDBType();
+
+        if (duckDBType == DuckDBType.Time && (underlyingType == typeof(TimeOnly) || underlyingType == typeof(DuckDBTimeOnly)))
+        {
+            return [DuckDBType.Time, DuckDBType.TimeNs];
+        }
 
         return duckDBType switch
         {
             DuckDBType.Invalid => throw new NotSupportedException($"Type {type.Name} is not supported for mapping"),
-            _ => duckDBType
+            _ => [duckDBType]
         };
     }
 
@@ -214,16 +235,6 @@ public class DuckDBMappedAppender<T, TMap> : IDisposable where TMap : DuckDBAppe
 
         return columnType.ToString();
     }
-
-    private static CompiledAppenderMap CreateCompiledMap()
-    {
-        var mappings = new TMap().PropertyMappings;
-        return new CompiledAppenderMap(mappings, DuckDBAppenderMapCompiler.Compile(mappings));
-    }
-
-    private sealed record CompiledAppenderMap(
-        IReadOnlyList<IPropertyMapping<T>> Mappings,
-        Action<IDuckDBAppenderRow, T> WriteRecord);
 
     /// <summary>
     /// Closes the appender and flushes any remaining data.

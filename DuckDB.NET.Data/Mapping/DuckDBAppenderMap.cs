@@ -1,6 +1,4 @@
-using System.Linq;
-using System.Linq.Expressions;
-using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace DuckDB.NET.Data.Mapping;
 
@@ -72,8 +70,7 @@ internal interface IPropertyMapping<T>
 {
     Type PropertyType { get; }
     PropertyMappingType MappingType { get; }
-    void AppendToRow(IDuckDBAppenderRow row, T record);
-    Expression BuildWriteExpression(ParameterExpression row, ParameterExpression record);
+    void AppendToRow(DuckDBAppenderRow row, T record);
 }
 
 internal sealed class PropertyMapping<T, TProperty> : IPropertyMapping<T>
@@ -82,9 +79,21 @@ internal sealed class PropertyMapping<T, TProperty> : IPropertyMapping<T>
     public Func<T, TProperty> Getter { get; set; } = _ => default!;
     public PropertyMappingType MappingType { get; set; }
 
-    public void AppendToRow(IDuckDBAppenderRow row, T record)
+    // Computed once per closed type: whether the property is a generic or non-generic dictionary.
+    private static readonly bool IsDictionaryProperty =
+        typeof(TProperty).TryGetDictionaryTypes(out _, out _) || typeof(IDictionary).IsAssignableFrom(typeof(TProperty));
+
+    public void AppendToRow(DuckDBAppenderRow row, T record)
     {
         var value = Getter(record);
+
+        // Both conditions are constants for the JIT. A nullable value type must not reach the patterns below:
+        // testing it against a type boxes it, once for every pattern that is tried.
+        if (typeof(TProperty).IsValueType && default(TProperty) is null)
+        {
+            AppendNullable(row, ref value);
+            return;
+        }
 
         if (value is null)
         {
@@ -116,22 +125,48 @@ internal sealed class PropertyMapping<T, TProperty> : IPropertyMapping<T>
             TimeSpan v => row.AppendValue(v),
             Guid v => row.AppendValue(v),
             BigInteger v => row.AppendValue(v),
+            Int128 v => row.AppendValue(v),
+            UInt128 v => row.AppendValue(v),
             DuckDBDateOnly v => row.AppendValue(v),
             DuckDBTimeOnly v => row.AppendValue(v),
             DateOnly v => row.AppendValue(v),
             TimeOnly v => row.AppendValue(v),
 
-            // MAP columns. The writer picks a typed path from the dictionary's runtime type.
-            IDictionary v => row.AppendValue(v),
+            // MAP columns: dictionaries are written as their key/value entries.
+            IEnumerable v when IsDictionaryProperty => row.AppendMapValue(v),
 
             _ => throw new NotSupportedException($"Type {typeof(TProperty).Name} is not supported for appending")
         };
     }
 
-    public Expression BuildWriteExpression(ParameterExpression row, ParameterExpression record)
+    // Every type here has an AppendValue overload that takes its nullable, so the value is passed on as it is.
+    // typeof(TProperty) is a constant for the JIT, which keeps the one matching line.
+    private static void AppendNullable(DuckDBAppenderRow row, ref TProperty value)
     {
-        var value = Expression.Invoke(Expression.Constant(Getter), record);
-        return DuckDBAppenderMapCompiler.CreateAppendExpression(row, value, typeof(TProperty));
+        if (typeof(TProperty) == typeof(bool?)) row.AppendValue(Unsafe.As<TProperty, bool?>(ref value));
+        else if (typeof(TProperty) == typeof(sbyte?)) row.AppendValue(Unsafe.As<TProperty, sbyte?>(ref value));
+        else if (typeof(TProperty) == typeof(short?)) row.AppendValue(Unsafe.As<TProperty, short?>(ref value));
+        else if (typeof(TProperty) == typeof(int?)) row.AppendValue(Unsafe.As<TProperty, int?>(ref value));
+        else if (typeof(TProperty) == typeof(long?)) row.AppendValue(Unsafe.As<TProperty, long?>(ref value));
+        else if (typeof(TProperty) == typeof(byte?)) row.AppendValue(Unsafe.As<TProperty, byte?>(ref value));
+        else if (typeof(TProperty) == typeof(ushort?)) row.AppendValue(Unsafe.As<TProperty, ushort?>(ref value));
+        else if (typeof(TProperty) == typeof(uint?)) row.AppendValue(Unsafe.As<TProperty, uint?>(ref value));
+        else if (typeof(TProperty) == typeof(ulong?)) row.AppendValue(Unsafe.As<TProperty, ulong?>(ref value));
+        else if (typeof(TProperty) == typeof(float?)) row.AppendValue(Unsafe.As<TProperty, float?>(ref value));
+        else if (typeof(TProperty) == typeof(double?)) row.AppendValue(Unsafe.As<TProperty, double?>(ref value));
+        else if (typeof(TProperty) == typeof(decimal?)) row.AppendValue(Unsafe.As<TProperty, decimal?>(ref value));
+        else if (typeof(TProperty) == typeof(DateTime?)) row.AppendValue(Unsafe.As<TProperty, DateTime?>(ref value));
+        else if (typeof(TProperty) == typeof(DateTimeOffset?)) row.AppendValue(Unsafe.As<TProperty, DateTimeOffset?>(ref value));
+        else if (typeof(TProperty) == typeof(TimeSpan?)) row.AppendValue(Unsafe.As<TProperty, TimeSpan?>(ref value));
+        else if (typeof(TProperty) == typeof(Guid?)) row.AppendValue(Unsafe.As<TProperty, Guid?>(ref value));
+        else if (typeof(TProperty) == typeof(BigInteger?)) row.AppendValue(Unsafe.As<TProperty, BigInteger?>(ref value));
+        else if (typeof(TProperty) == typeof(Int128?)) row.AppendValue(Unsafe.As<TProperty, Int128?>(ref value));
+        else if (typeof(TProperty) == typeof(UInt128?)) row.AppendValue(Unsafe.As<TProperty, UInt128?>(ref value));
+        else if (typeof(TProperty) == typeof(DuckDBDateOnly?)) row.AppendValue(Unsafe.As<TProperty, DuckDBDateOnly?>(ref value));
+        else if (typeof(TProperty) == typeof(DuckDBTimeOnly?)) row.AppendValue(Unsafe.As<TProperty, DuckDBTimeOnly?>(ref value));
+        else if (typeof(TProperty) == typeof(DateOnly?)) row.AppendValue(Unsafe.As<TProperty, DateOnly?>(ref value));
+        else if (typeof(TProperty) == typeof(TimeOnly?)) row.AppendValue(Unsafe.As<TProperty, TimeOnly?>(ref value));
+        else throw new NotSupportedException($"Type {typeof(TProperty).Name} is not supported for appending");
     }
 }
 
@@ -140,13 +175,10 @@ internal sealed class DefaultValueMapping<T> : IPropertyMapping<T>
     public Type PropertyType { get; set; } = typeof(object);
     public PropertyMappingType MappingType { get; set; }
 
-    public void AppendToRow(IDuckDBAppenderRow row, T record)
+    public void AppendToRow(DuckDBAppenderRow row, T record)
     {
         row.AppendDefault();
     }
-
-    public Expression BuildWriteExpression(ParameterExpression row, ParameterExpression record)
-        => Expression.Call(row, nameof(IDuckDBAppenderRow.AppendDefault), Type.EmptyTypes);
 }
 
 internal sealed class NullValueMapping<T> : IPropertyMapping<T>
@@ -154,121 +186,8 @@ internal sealed class NullValueMapping<T> : IPropertyMapping<T>
     public Type PropertyType { get; set; } = typeof(object);
     public PropertyMappingType MappingType { get; set; }
 
-    public void AppendToRow(IDuckDBAppenderRow row, T record)
+    public void AppendToRow(DuckDBAppenderRow row, T record)
     {
         row.AppendNullValue();
-    }
-
-    public Expression BuildWriteExpression(ParameterExpression row, ParameterExpression record)
-        => Expression.Call(row, nameof(IDuckDBAppenderRow.AppendNullValue), Type.EmptyTypes);
-}
-
-internal static class DuckDBAppenderMapCompiler
-{
-    private static readonly HashSet<Type> SupportedValueTypes =
-    [
-        typeof(bool),
-        typeof(sbyte),
-        typeof(short),
-        typeof(int),
-        typeof(long),
-        typeof(byte),
-        typeof(ushort),
-        typeof(uint),
-        typeof(ulong),
-        typeof(float),
-        typeof(double),
-        typeof(decimal),
-        typeof(DateTime),
-        typeof(DateTimeOffset),
-        typeof(TimeSpan),
-        typeof(Guid),
-        typeof(BigInteger),
-        typeof(DuckDBDateOnly),
-        typeof(DuckDBTimeOnly),
-        typeof(DateOnly),
-        typeof(TimeOnly)
-    ];
-
-    private static readonly MethodInfo AppendEnumerableMethod = typeof(IDuckDBAppenderRow)
-        .GetMethods()
-        .Single(method => method.Name == nameof(IDuckDBAppenderRow.AppendValue) &&
-                          method.IsGenericMethodDefinition &&
-                          method.GetParameters()[0].ParameterType.IsGenericType &&
-                          method.GetParameters()[0].ParameterType.GetGenericTypeDefinition() == typeof(IEnumerable<>));
-
-    private static readonly MethodInfo AppendDictionaryMethod =
-        typeof(IDuckDBAppenderRow).GetMethod(nameof(IDuckDBAppenderRow.AppendValue), [typeof(IDictionary)])!;
-
-    public static Action<IDuckDBAppenderRow, T> Compile<T>(IReadOnlyList<IPropertyMapping<T>> mappings)
-    {
-        var row = Expression.Parameter(typeof(IDuckDBAppenderRow), "row");
-        var record = Expression.Parameter(typeof(T), "record");
-        var writes = new List<Expression>(mappings.Count + 1);
-
-        for (var index = 0; index < mappings.Count; index++)
-        {
-            writes.Add(mappings[index].BuildWriteExpression(row, record));
-        }
-
-        // IDuckDBAppenderRow methods return the row to support fluent callers. The mapped
-        // callback is an Action, so force the compiled block's result type to void.
-        writes.Add(Expression.Empty());
-
-        return Expression.Lambda<Action<IDuckDBAppenderRow, T>>(
-            Expression.Block(writes),
-            row,
-            record).Compile();
-    }
-
-    internal static Expression CreateAppendExpression(
-        ParameterExpression row,
-        Expression value,
-        Type propertyType)
-    {
-        if (propertyType == typeof(string) || propertyType == typeof(byte[]))
-        {
-            return Expression.Call(
-                row,
-                nameof(IDuckDBAppenderRow.AppendValue),
-                Type.EmptyTypes,
-                value);
-        }
-
-        if (propertyType.TryGetDictionaryTypes(out var keyType, out var mapValueType))
-        {
-            // MAP columns: generic dictionaries go through AppendValue<KeyValuePair<TKey, TValue>>.
-            var pairsType = typeof(IEnumerable<>).MakeGenericType(typeof(KeyValuePair<,>).MakeGenericType(keyType, mapValueType));
-
-            return Expression.Call(
-                row,
-                AppendEnumerableMethod.MakeGenericMethod(pairsType.GetGenericArguments()[0]),
-                Expression.Convert(value, pairsType));
-        }
-
-        if (typeof(IDictionary).IsAssignableFrom(propertyType))
-        {
-            return Expression.Call(row, AppendDictionaryMethod, Expression.Convert(value, typeof(IDictionary)));
-        }
-
-        var underlyingType = Nullable.GetUnderlyingType(propertyType);
-        var valueType = underlyingType ?? propertyType;
-
-        if (!SupportedValueTypes.Contains(valueType) && !valueType.IsEnum)
-        {
-            throw new NotSupportedException($"Type {propertyType.Name} is not supported for appending");
-        }
-
-        var nullableType = typeof(Nullable<>).MakeGenericType(valueType);
-        var nullableValue = propertyType == nullableType
-            ? value
-            : Expression.Convert(value, nullableType);
-        var genericArguments = valueType.IsEnum ? [valueType] : Type.EmptyTypes;
-
-        return Expression.Call(
-            row,
-            nameof(IDuckDBAppenderRow.AppendValue),
-            genericArguments,
-            nullableValue);
     }
 }

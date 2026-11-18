@@ -5,9 +5,7 @@ using System.Threading;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
 using DuckDB.NET.Data.Arrow;
-using DuckDB.NET.Data.DataChunk.Reader;
-using PreparedStatementBase = DuckDB.NET.Data.PreparedStatement.PreparedStatement;
-using ReusablePreparedStatement = DuckDB.NET.Data.PreparedStatement.ReusablePreparedStatement;
+using DuckDB.NET.Data.PreparedStatement;
 
 namespace DuckDB.NET.Data;
 
@@ -15,12 +13,13 @@ public class DuckDBCommand : DbCommand
 {
     private DuckDBConnection? connection;
     private readonly DuckDBParameterCollection parameters = new();
-    private ReusablePreparedStatement? preparedStatement;
-    private DuckDBConnection? preparedConnection;
-    private List<(DuckDBConnection Connection, ReusablePreparedStatement Statement)>? deferredPreparedStatements;
-    private HashSet<DuckDBConnection>? registeredConnections;
-    private int activeExecutions;
-    private bool disposed;
+
+    // Set by Prepare(). The entry belongs to the connection, which destroys it when it closes or when the text is
+    // prepared again; the command then takes the connection's current one on its next execution. After a failed
+    // Prepare() the command has no entry and prepares again on its next execution.
+    private bool prepared;
+    private bool preparePending;
+    private PreparedStatementEntry? preparedEntry;
 
     protected override DbTransaction? DbTransaction { get; set; }
     protected override DbParameterCollection DbParameterCollection => parameters;
@@ -28,7 +27,7 @@ public class DuckDBCommand : DbCommand
     public new virtual DuckDBParameterCollection Parameters => parameters;
 
     public override int CommandTimeout { get; set; }
-    public override CommandType CommandType { get; set; }
+    public override CommandType CommandType { get; set; } = CommandType.Text;
     public override bool DesignTimeVisible { get; set; }
     public override UpdateRowSource UpdatedRowSource { get; set; }
 
@@ -48,16 +47,14 @@ public class DuckDBCommand : DbCommand
         get;
         set
         {
-            EnsureNotDisposed();
-
-            var newValue = value ?? string.Empty;
-            if (string.Equals(field, newValue, StringComparison.Ordinal))
+            // TODO: We shouldn't be able to change the CommandText when the command is in execution (requires CommandState implementation)
+            var commandText = value ?? string.Empty;
+            if (!string.Equals(field, commandText, StringComparison.Ordinal))
             {
-                return;
+                Unprepare();
             }
 
-            InvalidatePreparedStatements();
-            field = newValue;
+            field = commandText;
         }
     } = string.Empty;
 
@@ -66,16 +63,12 @@ public class DuckDBCommand : DbCommand
         get => connection;
         set
         {
-            EnsureNotDisposed();
-
-            var newConnection = (DuckDBConnection?)value;
-            if (ReferenceEquals(connection, newConnection))
+            if (!ReferenceEquals(connection, value))
             {
-                return;
+                Unprepare();
             }
 
-            InvalidatePreparedStatements();
-            connection = newConnection;
+            connection = (DuckDBConnection?)value;
         }
     }
 
@@ -99,33 +92,38 @@ public class DuckDBCommand : DbCommand
     {
         EnsureConnectionOpen();
 
-        if (preparedStatement is { } reusableStatement)
-        {
-            return ExecutePreparedNonQuery(reusableStatement, connection!.NativeConnection);
-        }
-
         var results = ExecuteStatements();
 
-        var count = 0;
+        // DbCommand.ExecuteNonQuery: "For UPDATE, INSERT, and DELETE statements, the return value is the number of
+        // rows affected by the command. For all other types of statements, the return value is -1."
+        var count = -1;
 
-        foreach (var result in results)
+        foreach (var (result, statementType) in results)
         {
             var current = result;
-            count += (int)NativeMethods.Query.DuckDBRowsChanged(ref current);
+            if (CountsRows(statementType))
+            {
+                count = Math.Max(count, 0) + (int)GetRowsAffected(ref current);
+            }
+
             result.Close();
         }
 
         return count;
     }
 
+    /// <summary>The statements whose affected-row count ADO.NET reports; every other statement reports -1.</summary>
+    internal static bool CountsRows(DuckDBStatementType statementType) =>
+        statementType is DuckDBStatementType.Insert or DuckDBStatementType.Update or DuckDBStatementType.Delete or DuckDBStatementType.Copy or DuckDBStatementType.MergeInto;
+
+    internal static long GetRowsAffected(ref DuckDBResult result) =>
+        NativeMethods.Query.DuckDBResultReturnType(result) == DuckDBResultType.QueryResult
+            ? NativeMethods.Query.DuckDBRowCount(ref result)
+            : NativeMethods.Query.DuckDBRowsChanged(ref result);
+
     public override object? ExecuteScalar()
     {
         EnsureConnectionOpen();
-
-        if (preparedStatement is { } reusableStatement)
-        {
-            return ExecutePreparedScalar(reusableStatement, connection!.NativeConnection);
-        }
 
         using var reader = ExecuteReader();
         return reader.Read() ? reader.GetValue(0) : null;
@@ -166,13 +164,13 @@ public class DuckDBCommand : DbCommand
 
         var results = ExecuteStatements();
 
-        foreach (var result in results)
+        foreach (var (result, _) in results)
         {
             var current = result;
 
             if (NativeMethods.Query.DuckDBResultReturnType(current) == DuckDBResultType.QueryResult)
             {
-                return new DuckDBArrowArrayStream(current);
+                return new DuckDBArrowArrayStream(current, connection!.NativeConnection);
             }
 
             current.Close();
@@ -203,353 +201,106 @@ public class DuckDBCommand : DbCommand
         }
     }
 
+    /// <summary>
+    /// Prepares the statement of the command, so later executions only bind the parameters and execute: they skip
+    /// splitting the text into statements, parsing and preparing. The connection keeps the statement until it closes,
+    /// and commands with the same text on that connection share it. Each call prepares the statement anew, and the
+    /// other commands with that text then use the new one. After the connection is closed and opened again, the next
+    /// execution prepares it again. Changing <see cref="CommandText"/> or <see cref="Connection"/> undoes the
+    /// preparation.
+    /// </summary>
+    /// <remarks>
+    /// A command of several statements is not prepared: a later statement can depend on an earlier one having run,
+    /// so each is still prepared just before it runs. Errors in the text are reported here instead of at execution.
+    /// A prepared statement keeps what was true when it was prepared: the types of its parameters (values are
+    /// converted to them), and the definitions of the views and macros and the settings it uses. After changing them
+    /// (a column altered to another type, CREATE OR REPLACE or DROP of a view or macro, SET), call Prepare() again.
+    /// As IDbCommand.Prepare documents, throws InvalidOperationException when "The Connection is not set. -or- The
+    /// Connection is not Open()."
+    /// </remarks>
     public override void Prepare()
     {
-        EnsureNotDisposed();
         EnsureConnectionOpen();
 
-        if (preparedStatement is not null)
+        prepared = true;
+        try
         {
-            return;
+            preparedEntry = connection!.PrepareStatement(CommandText);
+            preparePending = false;
+        }
+        catch
+        {
+            // The command keeps no statement that no longer matches the database (a view it reads was dropped), but
+            // stays prepared: its next execution prepares again, reporting the error if it remains and keeping the
+            // statement if the cause has passed (another result was open on the connection).
+            preparedEntry = null;
+            preparePending = true;
+            throw;
+        }
+    }
+
+    private void Unprepare()
+    {
+        prepared = false;
+        preparePending = false;
+        preparedEntry = null;
+    }
+
+    private IEnumerable<StatementResult> ExecuteStatements()
+    {
+        var nativeConnection = connection!.NativeConnection;
+
+        return prepared
+            ? ExecutePrepared(nativeConnection, parameters, UseStreamingMode)
+            : PreparedStatement.PreparedStatement.PrepareMultiple(nativeConnection, CommandText, parameters, UseStreamingMode);
+    }
+
+    // An iterator, like PrepareMultiple, so that an error (also from preparing again) is raised where the reader
+    // expects it: inside its constructor, which then closes the connection for CommandBehavior.CloseConnection.
+    private IEnumerable<StatementResult> ExecutePrepared(DuckDBNativeConnection nativeConnection, DuckDBParameterCollection parameterCollection,
+                                                         bool useStreamingMode)
+    {
+        if (preparePending || preparedEntry is { IsStale: true })
+        {
+            // The connection was closed since Prepare(), the text was prepared again, or Prepare() failed.
+            preparedEntry = connection!.GetOrPrepareStatement(CommandText);
+            preparePending = false;
         }
 
-        var statement = PreparedStatementBase.TryPrepareReusable(connection!.NativeConnection, CommandText);
-        if (statement is null)
+        var entry = preparedEntry;
+
+        if (entry is null || !entry.TryRent())
         {
-            return;
+            // A command of several statements, or another execution is binding the shared statement (a command with
+            // the same text on another thread).
+            foreach (var result in PreparedStatement.PreparedStatement.PrepareMultiple(nativeConnection, CommandText, parameterCollection, useStreamingMode))
+            {
+                yield return result;
+            }
+
+            yield break;
         }
 
-        preparedStatement = statement;
-        preparedConnection = connection;
-        RefreshPreparedCommandRegistrations();
+        DuckDBResult queryResult;
+        try
+        {
+            queryResult = entry.Execute(parameterCollection, useStreamingMode, nativeConnection);
+        }
+        finally
+        {
+            // The result does not need the statement, so it is free again before the result is read.
+            entry.Return();
+        }
+
+        yield return new StatementResult(queryResult, entry.StatementType);
     }
 
     protected override DbParameter CreateDbParameter() => new DuckDBParameter();
 
     internal void CloseConnection() => Connection!.Close();
 
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing && !disposed)
-        {
-            disposed = true;
-            InvalidatePreparedStatements();
-
-            if (activeExecutions == 0)
-            {
-                UnregisterFromConnections();
-            }
-        }
-
-        base.Dispose(disposing);
-    }
-
-    private IEnumerable<DuckDBResult> ExecuteStatements()
-    {
-        EnsureNotDisposed();
-
-        var nativeConnection = connection!.NativeConnection;
-        var reusableStatement = preparedStatement;
-
-        return reusableStatement is null
-            ? PreparedStatementBase.PrepareMultiple(nativeConnection, CommandText, parameters, UseStreamingMode)
-            : ExecutePreparedStatement(reusableStatement, nativeConnection);
-    }
-
-    private IEnumerable<DuckDBResult> ExecutePreparedStatement(
-        ReusablePreparedStatement reusableStatement,
-        DuckDBNativeConnection nativeConnection)
-    {
-        BeginPreparedExecution();
-
-        try
-        {
-            yield return reusableStatement.Execute(parameters, UseStreamingMode, nativeConnection);
-        }
-        finally
-        {
-            CompletePreparedExecution();
-        }
-    }
-
-    private int ExecutePreparedNonQuery(
-        ReusablePreparedStatement reusableStatement,
-        DuckDBNativeConnection nativeConnection)
-    {
-        BeginPreparedExecution();
-
-        try
-        {
-            var result = reusableStatement.Execute(parameters, UseStreamingMode, nativeConnection);
-
-            try
-            {
-                var current = result;
-                return (int)NativeMethods.Query.DuckDBRowsChanged(ref current);
-            }
-            finally
-            {
-                result.Close();
-            }
-        }
-        finally
-        {
-            CompletePreparedExecution();
-        }
-    }
-
-    private object? ExecutePreparedScalar(
-        ReusablePreparedStatement reusableStatement,
-        DuckDBNativeConnection nativeConnection)
-    {
-        BeginPreparedExecution();
-
-        try
-        {
-            var result = reusableStatement.Execute(parameters, UseStreamingMode, nativeConnection);
-
-            try
-            {
-                if (NativeMethods.Query.DuckDBResultReturnType(result) != DuckDBResultType.QueryResult ||
-                    NativeMethods.Query.DuckDBColumnCount(ref result) == 0)
-                {
-                    return null;
-                }
-
-                return ReadFirstValue(ref result);
-            }
-            finally
-            {
-                result.Close();
-            }
-        }
-        finally
-        {
-            CompletePreparedExecution();
-        }
-    }
-
-    private static object? ReadFirstValue(ref DuckDBResult result)
-    {
-        var streamingResult = NativeMethods.Types.DuckDBResultIsStreaming(result) > 0;
-        long chunkIndex = 0;
-
-        while (true)
-        {
-            using var chunk = streamingResult
-                ? NativeMethods.StreamingResult.DuckDBStreamFetchChunk(result)
-                : NativeMethods.Types.DuckDBResultGetChunk(result, chunkIndex++);
-
-            if (chunk is null || chunk.IsInvalid)
-            {
-                return null;
-            }
-
-            if (NativeMethods.DataChunks.DuckDBDataChunkGetSize(chunk) == 0)
-            {
-                continue;
-            }
-
-            var vector = NativeMethods.DataChunks.DuckDBDataChunkGetVector(chunk, 0);
-            using var logicalType = NativeMethods.Query.DuckDBColumnLogicalType(ref result, 0);
-            using var reader = VectorDataReaderFactory.CreateReader(vector, logicalType);
-
-            return reader.IsValid(0) ? reader.GetValue(0) : DBNull.Value;
-        }
-    }
-
-    private void BeginPreparedExecution()
-    {
-        activeExecutions++;
-    }
-
-    private void CompletePreparedExecution()
-    {
-        activeExecutions--;
-
-        if (activeExecutions == 0)
-        {
-            DisposeDeferredPreparedStatements();
-        }
-
-        if (disposed && activeExecutions == 0)
-        {
-            UnregisterFromConnections();
-        }
-    }
-
-    private void InvalidatePreparedStatements()
-    {
-        var statement = preparedStatement;
-        var statementConnection = preparedConnection;
-        preparedStatement = null;
-        preparedConnection = null;
-
-        if (statement is null)
-        {
-            return;
-        }
-
-        if (activeExecutions > 0)
-        {
-            deferredPreparedStatements ??= [];
-            deferredPreparedStatements.Add((statementConnection!, statement));
-            RefreshPreparedCommandRegistrations();
-            return;
-        }
-
-        statement.Dispose();
-        RefreshPreparedCommandRegistrations();
-    }
-
-    private void DisposeDeferredPreparedStatements()
-    {
-        var deferredStatements = deferredPreparedStatements;
-        if (deferredStatements is null)
-        {
-            return;
-        }
-
-        foreach (var deferredStatement in deferredStatements)
-        {
-            deferredStatement.Statement.Dispose();
-        }
-
-        deferredPreparedStatements = null;
-        RefreshPreparedCommandRegistrations();
-    }
-
-    internal void OnConnectionClosing(DuckDBConnection closingConnection)
-    {
-        if (ReferenceEquals(preparedConnection, closingConnection))
-        {
-            preparedStatement?.Dispose();
-            preparedStatement = null;
-            preparedConnection = null;
-        }
-
-        for (var index = deferredPreparedStatements?.Count - 1 ?? -1; index >= 0; index--)
-        {
-            var deferredStatement = deferredPreparedStatements![index];
-            if (!ReferenceEquals(deferredStatement.Connection, closingConnection))
-            {
-                continue;
-            }
-
-            deferredStatement.Statement.Dispose();
-            deferredPreparedStatements.RemoveAt(index);
-        }
-
-        if (deferredPreparedStatements?.Count == 0)
-        {
-            deferredPreparedStatements = null;
-        }
-
-        RefreshPreparedCommandRegistrations();
-    }
-
-    private void RefreshPreparedCommandRegistrations()
-    {
-        List<DuckDBConnection>? connectionsToRemove = null;
-
-        if (registeredConnections is not null)
-        {
-            foreach (var registeredConnection in registeredConnections)
-            {
-                if (IsConnectionRequired(registeredConnection))
-                {
-                    continue;
-                }
-
-                connectionsToRemove ??= [];
-                connectionsToRemove.Add(registeredConnection);
-            }
-        }
-
-        if (connectionsToRemove is not null)
-        {
-            foreach (var registeredConnection in connectionsToRemove)
-            {
-                registeredConnection.UnregisterPreparedCommand(this);
-                registeredConnections!.Remove(registeredConnection);
-            }
-        }
-
-        if (registeredConnections?.Count == 0)
-        {
-            registeredConnections = null;
-        }
-
-        if (preparedConnection is not null)
-        {
-            RegisterWithConnection(preparedConnection);
-        }
-
-        if (deferredPreparedStatements is not null)
-        {
-            foreach (var deferredStatement in deferredPreparedStatements)
-            {
-                RegisterWithConnection(deferredStatement.Connection);
-            }
-        }
-    }
-
-    private bool IsConnectionRequired(DuckDBConnection candidate)
-    {
-        if (ReferenceEquals(preparedConnection, candidate))
-        {
-            return true;
-        }
-
-        if (deferredPreparedStatements is null)
-        {
-            return false;
-        }
-
-        foreach (var deferredStatement in deferredPreparedStatements)
-        {
-            if (ReferenceEquals(deferredStatement.Connection, candidate))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private void RegisterWithConnection(DuckDBConnection requiredConnection)
-    {
-        registeredConnections ??= [];
-        if (registeredConnections.Add(requiredConnection))
-        {
-            requiredConnection.RegisterPreparedCommand(this);
-        }
-    }
-
-    private void UnregisterFromConnections()
-    {
-        if (registeredConnections is null)
-        {
-            return;
-        }
-
-        foreach (var registeredConnection in registeredConnections)
-        {
-            registeredConnection.UnregisterPreparedCommand(this);
-        }
-
-        registeredConnections = null;
-    }
-
-    private void EnsureNotDisposed()
-    {
-        ObjectDisposedException.ThrowIf(disposed, this);
-    }
-
     private void EnsureConnectionOpen([CallerMemberName] string operation = "")
     {
-        EnsureNotDisposed();
-
         if (Connection is null || Connection.State != ConnectionState.Open)
         {
             throw new InvalidOperationException($"{operation} requires an open connection");

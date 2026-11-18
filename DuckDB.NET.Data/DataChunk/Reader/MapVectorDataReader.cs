@@ -1,18 +1,22 @@
-﻿using System.Collections.Concurrent;
+﻿using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 
 namespace DuckDB.NET.Data.DataChunk.Reader;
 
-internal sealed class MapVectorDataReader : VectorDataReaderBase
+// How the keys and values of a Dictionary<TKey, TValue> are read without a box (CreateBuilder and the builders)
+// is in MapVectorDataReader.Builders.cs.
+internal sealed partial class MapVectorDataReader : VectorDataReaderBase
 {
-    private static readonly ConcurrentDictionary<Type, IMapMaterializer> Materializers = new();
-
     private readonly VectorDataReaderBase keyReader;
     private readonly VectorDataReaderBase valueReader;
-    private Type? cachedTargetType;
-    private IMapMaterializer? cachedMaterializer;
 
-    internal unsafe MapVectorDataReader(IntPtr vector, void* dataPointer, ulong* validityMaskPointer, DuckDBType columnType, DuckDBLogicalType logicalColumnType, string columnName) 
-                    : base(dataPointer, validityMaskPointer, columnType, columnName)
+    // What GetValueCore found out about the type it was asked for last. It is worked out once per type it is asked
+    // for, as a column is read as the same type row after row.
+    private Type? planType;
+    private MapPlan plan;
+
+    internal unsafe MapVectorDataReader(IntPtr vector, void* dataPointer, ulong* validityMaskPointer, DuckDBType columnType, DuckDBLogicalType logicalColumnType, string columnName)
+        : base(dataPointer, validityMaskPointer, columnType, columnName)
     {
         using var keyTypeLogical = NativeMethods.LogicalType.DuckDBMapTypeKeyType(logicalColumnType);
         using var valueTypeLogical = NativeMethods.LogicalType.DuckDBMapTypeValueType(logicalColumnType);
@@ -36,85 +40,112 @@ internal sealed class MapVectorDataReader : VectorDataReaderBase
         return typeof(Dictionary<,>).MakeGenericType(keyReader.ProviderSpecificClrType, valueReader.ProviderSpecificClrType);
     }
 
-    internal override unsafe object GetValue(ulong offset, Type targetType)
+    internal override unsafe object GetValueCore(ulong offset, Type targetType)
     {
         if (DuckDBType != DuckDBType.Map)
         {
-            return base.GetValue(offset, targetType);
+            return base.GetValueCore(offset, targetType);
+        }
+
+        if (targetType != planType)
+        {
+            plan = CreatePlan(targetType);
+            planType = targetType;
         }
 
         var listData = (DuckDBListEntry*)DataPointer + offset;
-        var materializer = GetMaterializer(targetType);
 
-        if (materializer != null)
+        if (plan.Builder != null)
         {
-            return materializer.Materialize(keyReader, valueReader, listData->Offset, listData->Length, ColumnName);
+            return plan.Builder.Build(keyReader, valueReader, listData->Offset, listData->Length);
         }
 
-        if (Activator.CreateInstance(targetType) is not IDictionary instance)
+        return GetBoxedDictionary(targetType, listData->Offset, listData->Length);
+    }
+
+    // Any type without a builder (see CreateBuilder): created as itself and filled through IDictionary, with every key
+    // and value read as an object.
+    private IDictionary GetBoxedDictionary(Type targetType, ulong listOffset, ulong length)
+    {
+        var instance = Activator.CreateInstance(targetType) as IDictionary ?? throw NotADictionaryException();
+
+        for (ulong i = 0; i < length; i++)
         {
-            throw new InvalidOperationException($"Cannot read Map column {ColumnName} in a non-dictionary type");
-        }
+            var childOffset = i + listOffset;
 
-        var arguments = targetType.GetGenericArguments();
-        var allowsNullValues = arguments.Length == 2 && arguments[1].AllowsNullValue(out _, out _);
+            if (!keyReader.IsValid(childOffset))
+            {
+                ThrowNullKey(ColumnName);
+            }
 
-        for (ulong i = 0; i < listData->Length; i++)
-        {
-            var childOffset = i + listData->Offset;
+            var key = keyReader.GetValue(childOffset, plan.KeyType);
+            var value = valueReader.IsValid(childOffset) ? valueReader.GetValue(childOffset, plan.ValueType) : null;
 
-            var key = keyReader.GetValue(childOffset);
-            var value = valueReader.IsValid(childOffset) ? valueReader.GetValue(childOffset) : null;
-
-            if (allowsNullValues || value != null)
+            if (plan.AllowsNullValues || value != null)
             {
                 instance.Add(key, value);
             }
             else
             {
-                throw new InvalidCastException($"The Map in column {ColumnName} contains null value but dictionary does not allow null values");
+                ThrowNullValue(ColumnName);
             }
         }
 
         return instance;
     }
 
-    private IMapMaterializer? GetMaterializer(Type targetType)
+    // Returns the exception, for '?? throw', as the list reader's NotAListException does.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private InvalidOperationException NotADictionaryException() => new($"Cannot read Map column {ColumnName} in a non-dictionary type");
+
+    // Used by the IDictionary path and by the builders. A child reader carries the name of the map column.
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowNullValue(string columnName) => throw new InvalidCastException($"The Map in column {columnName} contains null value but dictionary does not allow null values");
+
+    // Used by the IDictionary path and by the builders. SQL cannot make a NULL map key, but a map can also arrive
+    // from Parquet, Arrow or the C API.
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowNullKey(string columnName) => throw new InvalidCastException($"The Map in column {columnName} contains a null key");
+
+    // Not inlined, so that GetValueCore does not set up a native-call frame on every row (Reader/DESIGN.md).
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private MapPlan CreatePlan(Type targetType)
     {
-        if (targetType == cachedTargetType)
+        // The key and value types are those of the Dictionary<TKey, TValue> the target is or derives from, so a class
+        // that is not generic itself, or whose type arguments are not the key and value, is read by its base. Another
+        // type (a SortedDictionary, a Hashtable) gives its own type arguments, or none.
+        var dictionaryType = targetType.FindGenericBase(typeof(Dictionary<,>));
+        var arguments = (dictionaryType ?? targetType).GetGenericArguments();
+
+        // What the IDictionary path reads a key and a value as, and whether it adds a NULL value; a builder knows
+        // its own types.
+        var keyTargetType = keyReader.ClrType;
+        var valueTargetType = valueReader.ClrType;
+        var allowsNullValues = false;
+
+        if (arguments.Length == 2)
         {
-            return cachedMaterializer;
+            if (arguments[0] == typeof(object) || arguments[1] == typeof(object))
+            {
+                throw new InvalidCastException($"Cannot read Map column {ColumnName} as a dictionary with object keys or values. Use a dictionary with concrete key and value types, or GetValue().");
+            }
+
+            arguments[0].AllowsNullValue(out _, out var underlyingKeyType);
+            keyTargetType = underlyingKeyType ?? arguments[0];
+
+            allowsNullValues = arguments[1].AllowsNullValue(out _, out var underlyingValueType);
+            valueTargetType = underlyingValueType ?? arguments[1];
         }
 
-        cachedTargetType = targetType;
-        cachedMaterializer = null;
-
-        if (!targetType.IsGenericType || targetType.GetGenericTypeDefinition() != typeof(Dictionary<,>))
-        {
-            return null;
-        }
-
-        var arguments = targetType.GetGenericArguments();
-        if (!CanReadDirectly(keyReader, arguments[0]) || !CanReadDirectly(valueReader, arguments[1]))
-        {
-            return null;
-        }
-
-        cachedMaterializer = Materializers.GetOrAdd(targetType, static type => CreateMaterializer(type));
-        return cachedMaterializer;
+        return new MapPlan(Builder: CreateBuilder(targetType, dictionaryType), KeyType: keyTargetType,
+                           ValueType: valueTargetType, AllowsNullValues: allowsNullValues);
     }
 
-    private static bool CanReadDirectly(VectorDataReaderBase reader, Type targetType)
-    {
-        var valueType = Nullable.GetUnderlyingType(targetType) ?? targetType;
-        return valueType == reader.ClrType || valueType == reader.ProviderSpecificClrType;
-    }
-
-    private static IMapMaterializer CreateMaterializer(Type targetType)
-    {
-        var materializerType = typeof(MapMaterializer<,>).MakeGenericType(targetType.GetGenericArguments());
-        return (IMapMaterializer)Activator.CreateInstance(materializerType)!;
-    }
+    // Builder reads keys and values on the typed path, or is null. KeyType, ValueType and AllowsNullValues are for
+    // the IDictionary path: the types a key and a value are read as, and whether a NULL value is added.
+    private readonly record struct MapPlan(MapBuilder? Builder, Type KeyType, Type ValueType, bool AllowsNullValues);
 
     internal override void Reset(IntPtr vector)
     {
@@ -131,50 +162,5 @@ internal sealed class MapVectorDataReader : VectorDataReaderBase
         keyReader.Dispose();
         valueReader.Dispose();
         base.Dispose();
-    }
-
-    private interface IMapMaterializer
-    {
-        object Materialize(VectorDataReaderBase keys, VectorDataReaderBase values, ulong offset, ulong length, string columnName);
-    }
-
-    private sealed class MapMaterializer<TKey, TValue> : IMapMaterializer where TKey : notnull
-    {
-        private static readonly bool AllowsNullValues = typeof(TValue).AllowsNullValue(out _, out _);
-
-        public object Materialize(VectorDataReaderBase keys, VectorDataReaderBase values, ulong offset, ulong length, string columnName)
-        {
-            var result = new Dictionary<TKey, TValue>(checked((int)length));
-
-            for (ulong i = 0; i < length; i++)
-            {
-                var childOffset = offset + i;
-                var key = Read<TKey>(keys, childOffset);
-
-                if (values.IsValid(childOffset))
-                {
-                    result.Add(key, Read<TValue>(values, childOffset));
-                }
-                else if (AllowsNullValues)
-                {
-                    result.Add(key, default!);
-                }
-                else
-                {
-                    throw new InvalidCastException($"The Map in column {columnName} contains null value but dictionary does not allow null values");
-                }
-            }
-
-            return result;
-        }
-
-        private static T Read<T>(VectorDataReaderBase reader, ulong offset)
-        {
-            // Object-valued readers need their natural non-generic path. Concrete value types use
-            // the generic path so they can flow into Dictionary<TKey, TValue> without boxing.
-            return typeof(T) == typeof(object)
-                ? (T)reader.GetValue(offset)
-                : reader.GetValueStrict<T>(offset);
-        }
     }
 }

@@ -9,28 +9,12 @@ public class DuckDBParameter : DbParameter
     private const DbType DefaultDbType = DbType.String;
 
     private object? value;
-    private string parameterName = string.Empty;
-    private int bindingMetadataVersion;
 
     public override DbType DbType { get; set; }
 
     [AllowNull]
     [DefaultValue("")]
-    public override string ParameterName
-    {
-        get => parameterName;
-        set
-        {
-            var newValue = value ?? string.Empty;
-            if (string.Equals(parameterName, newValue, StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            parameterName = newValue;
-            bindingMetadataVersion++;
-        }
-    }
+    public override string ParameterName { get; set; }
 
     public override object? Value
     {
@@ -45,7 +29,7 @@ public class DuckDBParameter : DbParameter
         }
     }
 
-    public override ParameterDirection Direction { get; set; }
+    public override ParameterDirection Direction { get; set; } = ParameterDirection.Input;
     public override bool IsNullable { get; set; }
 
     [AllowNull]
@@ -53,8 +37,6 @@ public class DuckDBParameter : DbParameter
     public override string SourceColumn { get; set; }
     public override bool SourceColumnNullMapping { get; set; }
     public override int Size { get; set; }
-
-    internal int BindingMetadataVersion => bindingMetadataVersion;
 
     public DuckDBParameter()
         : this (string.Empty, DefaultDbType, null)
@@ -84,21 +66,11 @@ public class DuckDBParameter : DbParameter
     }
 
     public override void ResetDbType() => DbType = DefaultDbType;
-
-    internal virtual bool TryBindScalarValue(
-        DuckDBPreparedStatement statement,
-        long index,
-        DuckDBType duckDBType,
-        out DuckDBState result)
-        => value.TryBindScalarValue(statement, index, duckDBType, DbType, out result);
-
-    internal virtual DuckDBValue ToDuckDBValue(DuckDBLogicalType logicalType, DuckDBType duckDBType)
-        => value.ToDuckDBValue(logicalType, duckDBType, DbType);
 }
 
 /// <summary>
-/// A DuckDB parameter that keeps its value in typed storage so repeated prepared executions do
-/// not need to box common value types.
+/// A DuckDB parameter that keeps its value in typed storage, so setting a value of a common value type
+/// does not box it.
 /// </summary>
 /// <typeparam name="T">The CLR type stored by the parameter.</typeparam>
 public sealed class DuckDBParameter<T> : DuckDBParameter
@@ -149,21 +121,4 @@ public sealed class DuckDBParameter<T> : DuckDBParameter
     }
 
     public override void ResetDbType() => DbType = DefaultTypedDbType;
-
-    internal override bool TryBindScalarValue(
-        DuckDBPreparedStatement statement,
-        long index,
-        DuckDBType duckDBType,
-        out DuckDBState result)
-    {
-        if (ClrToDuckDBConverter.TryBindTypedScalarValue(typedValue, statement, index, duckDBType, out result))
-        {
-            return true;
-        }
-
-        return ((object?)typedValue).TryBindScalarValue(statement, index, duckDBType, DbType, out result);
-    }
-
-    internal override DuckDBValue ToDuckDBValue(DuckDBLogicalType logicalType, DuckDBType duckDBType)
-        => ((object?)typedValue).ToDuckDBValue(logicalType, duckDBType, DbType);
 }

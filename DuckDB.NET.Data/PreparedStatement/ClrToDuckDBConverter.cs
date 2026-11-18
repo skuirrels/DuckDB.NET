@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text;
 
 namespace DuckDB.NET.Data.PreparedStatement;
 
@@ -25,8 +26,8 @@ internal static class ClrToDuckDBConverter
         { DbType.UInt64, value => NativeMethods.Value.DuckDBCreateUInt64((ulong)value) },
         { DbType.Single, value => NativeMethods.Value.DuckDBCreateFloat((float)value) },
         { DbType.Double, value => NativeMethods.Value.DuckDBCreateDouble((double)value) },
-        { DbType.String, value => NativeMethods.Value.DuckDBCreateVarchar((string?)value) },
-        { DbType.VarNumeric, value => NativeMethods.Value.DuckDBCreateHugeInt(new((BigInteger)value)) },
+        { DbType.String, value => CreateVarchar((string?)value) },
+        { DbType.VarNumeric, value => BigIntegerWithoutTargetType((BigInteger)value) },
         { DbType.Binary, value =>
             {
                 var bytes = (byte[])value;
@@ -35,19 +36,25 @@ internal static class ClrToDuckDBConverter
         },
         { DbType.Date, value =>
             {
-                var date = (value is DateOnly dateOnly ? (DuckDBDateOnly)dateOnly : (DuckDBDateOnly)value).ToDuckDBDate();
+                var date = value is DateOnly dateOnly ? dateOnly.ToDuckDBDate() : ((DuckDBDateOnly)value).ToDuckDBDate();
                 return NativeMethods.Value.DuckDBCreateDate(date);
             }
         },
         { DbType.Time, value =>
             {
-                var time = NativeMethods.DateTimeHelpers.DuckDBToTime(value is TimeOnly timeOnly ? (DuckDBTimeOnly)timeOnly : (DuckDBTimeOnly)value);
+                // A TimeSpan is a time of day here: TimeOnly.FromTimeSpan refuses a negative one or one of a day or more.
+                var time = value switch
+                {
+                    TimeOnly timeOnly => timeOnly.ToDuckDBTime(),
+                    TimeSpan timeSpan => TimeOnly.FromTimeSpan(timeSpan).ToDuckDBTime(),
+                    _ => ((DuckDBTimeOnly)value).ToDuckDBTime()
+                };
                 return NativeMethods.Value.DuckDBCreateTime(time);
             }
         },
         { DbType.DateTime, value =>
             {
-                var dateTime = (value is DateTime dt ? (DuckDBTimestamp)dt : (DuckDBTimestamp)value).ToDuckDBTimestampStruct();
+                var dateTime = value is DateTime dt ? dt.ToTimestampStruct(DuckDBType.Timestamp) : ((DuckDBTimestamp)value).ToDuckDBTimestampStruct();
                 return NativeMethods.Value.DuckDBCreateTimestamp(dateTime);
             }
         },
@@ -63,25 +70,34 @@ internal static class ClrToDuckDBConverter
 
         return (duckDBType, item) switch
         {
+            // An Int128 is a HUGEINT and a UInt128 a UHUGEINT, whatever the target: DuckDB casts the value to the type of
+            // the parameter and refuses one that does not fit. First, because the integer targets below would send them
+            // as text: neither type is IConvertible. Temporary: once TryConvertTo no longer uses Convert.ChangeType (2.0
+            // item 11), these become (DuckDBType.HugeInt, _) and (DuckDBType.UnsignedHugeInt, _) like the other integers.
+            (_, Int128 value) => NativeMethods.Value.DuckDBCreateHugeInt(new DuckDBHugeInt(value)),
+            (_, UInt128 value) => NativeMethods.Value.DuckDBCreateUHugeInt(new DuckDBUHugeInt(value)),
+
             (DuckDBType.Boolean, bool value) => NativeMethods.Value.DuckDBCreateBool(value),
 
-            (DuckDBType.TinyInt, _) => TryConvertTo(item, out sbyte result) ? NativeMethods.Value.DuckDBCreateInt8(result) : NativeMethods.Value.DuckDBCreateVarchar(item.ToString()),
-            (DuckDBType.SmallInt, _) => TryConvertTo(item, out short result) ? NativeMethods.Value.DuckDBCreateInt16(result) : NativeMethods.Value.DuckDBCreateVarchar(item.ToString()),
-            (DuckDBType.Integer, _) => TryConvertTo(item, out int result) ? NativeMethods.Value.DuckDBCreateInt32(result) : NativeMethods.Value.DuckDBCreateVarchar(item.ToString()),
-            (DuckDBType.BigInt, _) => TryConvertTo(item, out long result) ? NativeMethods.Value.DuckDBCreateInt64(result) : NativeMethods.Value.DuckDBCreateVarchar(item.ToString()),
+            (DuckDBType.TinyInt, _) => TryConvertTo<sbyte>(out var result) ? NativeMethods.Value.DuckDBCreateInt8(result) : CreateVarchar(item.ToString()),
+            (DuckDBType.SmallInt, _) => TryConvertTo<short>(out var result) ? NativeMethods.Value.DuckDBCreateInt16(result) : CreateVarchar(item.ToString()),
+            (DuckDBType.Integer, _) => TryConvertTo<int>(out var result) ? NativeMethods.Value.DuckDBCreateInt32(result) : CreateVarchar(item.ToString()),
+            (DuckDBType.BigInt, _) => TryConvertTo<long>(out var result) ? NativeMethods.Value.DuckDBCreateInt64(result) : CreateVarchar(item.ToString()),
 
-            (DuckDBType.UnsignedTinyInt, _) => TryConvertTo(item, out byte result) ? NativeMethods.Value.DuckDBCreateUInt8(result) : NativeMethods.Value.DuckDBCreateVarchar(item.ToString()),
-            (DuckDBType.UnsignedSmallInt, _) => TryConvertTo(item, out ushort result) ? NativeMethods.Value.DuckDBCreateUInt16(result) : NativeMethods.Value.DuckDBCreateVarchar(item.ToString()),
-            (DuckDBType.UnsignedInteger, _) => TryConvertTo(item, out uint result) ? NativeMethods.Value.DuckDBCreateUInt32(result) : NativeMethods.Value.DuckDBCreateVarchar(item.ToString()),
-            (DuckDBType.UnsignedBigInt, _) => TryConvertTo(item, out ulong result) ? NativeMethods.Value.DuckDBCreateUInt64(result) : NativeMethods.Value.DuckDBCreateVarchar(item.ToString()),
+            (DuckDBType.UnsignedTinyInt, _) => TryConvertTo<byte>(out var result) ? NativeMethods.Value.DuckDBCreateUInt8(result) : CreateVarchar(item.ToString()),
+            (DuckDBType.UnsignedSmallInt, _) => TryConvertTo<ushort>(out var result) ? NativeMethods.Value.DuckDBCreateUInt16(result) : CreateVarchar(item.ToString()),
+            (DuckDBType.UnsignedInteger, _) => TryConvertTo<uint>(out var result) ? NativeMethods.Value.DuckDBCreateUInt32(result) : CreateVarchar(item.ToString()),
+            (DuckDBType.UnsignedBigInt, _) => TryConvertTo<ulong>(out var result) ? NativeMethods.Value.DuckDBCreateUInt64(result) : CreateVarchar(item.ToString()),
 
             (DuckDBType.Float, float value) => NativeMethods.Value.DuckDBCreateFloat(value),
             (DuckDBType.Double, double value) => NativeMethods.Value.DuckDBCreateDouble(value),
 
             (DuckDBType.Decimal, decimal value) => DecimalToDuckDBValue(value),
             (DuckDBType.HugeInt, BigInteger value) => NativeMethods.Value.DuckDBCreateHugeInt(new DuckDBHugeInt(value)),
+            (DuckDBType.UnsignedHugeInt, BigInteger value) => NativeMethods.Value.DuckDBCreateUHugeInt(new DuckDBUHugeInt(value)),
+            (DuckDBType.VarInt, BigInteger value) => BigIntegerToDuckDBValue(value),
 
-            (DuckDBType.Varchar, string value) => NativeMethods.Value.DuckDBCreateVarchar(value),
+            (DuckDBType.Varchar, string value) => CreateVarchar(value),
             (DuckDBType.Uuid, Guid value) => NativeMethods.Value.DuckDBCreateUuid(value.ToHugeInt(false)),
 
             (DuckDBType.Timestamp, DateTime value) => NativeMethods.Value.DuckDBCreateTimestamp(value.ToTimestampStruct(duckDBType)),
@@ -93,15 +109,20 @@ internal static class ClrToDuckDBConverter
             (DuckDBType.TimestampTzNs, DateTime value) => NativeMethods.Value.DuckDBCreateTimestampTzNs(value.ToTimestampStruct(duckDBType)),
             (DuckDBType.TimestampTzNs, DateTimeOffset value) => NativeMethods.Value.DuckDBCreateTimestampTzNs(value.ToTimestampNsStruct()),
             (DuckDBType.Interval, TimeSpan value) => NativeMethods.Value.DuckDBCreateInterval(value),
-            (DuckDBType.Date, DateTime value) => NativeMethods.Value.DuckDBCreateDate(((DuckDBDateOnly)value).ToDuckDBDate()),
+            // No inferred type (a bare "?"): TimeSpan has no DbType, and its ToString() isn't interval text
+            // DuckDB can parse once there are days ("1.01:01:01"). DbType.Time sends it as a time instead.
+            (DuckDBType.Invalid, TimeSpan value) when dbType != DbType.Time => NativeMethods.Value.DuckDBCreateInterval(value),
+            (DuckDBType.Date, DateTime value) => NativeMethods.Value.DuckDBCreateDate(value.ToDuckDBDate()),
             (DuckDBType.Date, DuckDBDateOnly value) => NativeMethods.Value.DuckDBCreateDate(value.ToDuckDBDate()),
-            (DuckDBType.Time, DateTime value) => NativeMethods.Value.DuckDBCreateTime(NativeMethods.DateTimeHelpers.DuckDBToTime((DuckDBTimeOnly)value)),
-            (DuckDBType.Time, DuckDBTimeOnly value) => NativeMethods.Value.DuckDBCreateTime(NativeMethods.DateTimeHelpers.DuckDBToTime(value)),
-            (DuckDBType.Date, DateOnly value) => NativeMethods.Value.DuckDBCreateDate(((DuckDBDateOnly)value).ToDuckDBDate()),
-            (DuckDBType.Time, TimeOnly value) => NativeMethods.Value.DuckDBCreateTime(NativeMethods.DateTimeHelpers.DuckDBToTime(value)),
+            (DuckDBType.Time, DateTime value) => NativeMethods.Value.DuckDBCreateTime(value.ToDuckDBTime()),
+            (DuckDBType.Time, DuckDBTimeOnly value) => NativeMethods.Value.DuckDBCreateTime(value.ToDuckDBTime()),
+            (DuckDBType.Date, DateOnly value) => NativeMethods.Value.DuckDBCreateDate(value.ToDuckDBDate()),
+            (DuckDBType.Time, TimeOnly value) => NativeMethods.Value.DuckDBCreateTime(value.ToDuckDBTime()),
+            (DuckDBType.TimeNs, DateTime value) => NativeMethods.Value.DuckDBCreateTimeNs(DuckDBTimeNs.FromTicks(value.Ticks % TimeSpan.TicksPerDay)),
+            (DuckDBType.TimeNs, DuckDBTimeOnly value) => NativeMethods.Value.DuckDBCreateTimeNs(DuckDBTimeNs.FromTicks(value.Ticks)),
+            (DuckDBType.TimeNs, TimeOnly value) => NativeMethods.Value.DuckDBCreateTimeNs(DuckDBTimeNs.FromTicks(value.Ticks)),
+            (DuckDBType.TimeNs, TimeSpan value) => NativeMethods.Value.DuckDBCreateTimeNs(DuckDBTimeNs.FromTicks(TimeOnly.FromTimeSpan(value).Ticks)),
             (DuckDBType.TimeTz, DateTimeOffset value) => NativeMethods.Value.DuckDBCreateTimeTz(value.ToTimeTzStruct()),
-            (DuckDBType.TimeNs, TimeOnly value) => NativeMethods.Value.DuckDBCreateTimeNs(value.ToDuckDBTimeNs()),
-            (DuckDBType.TimeNs, DateTime value) => NativeMethods.Value.DuckDBCreateTimeNs(value.ToDuckDBTimeNs()),
             (DuckDBType.Blob, byte[] value) => NativeMethods.Value.DuckDBCreateBlob(value, value.Length),
             // Dictionaries are collections too, so they must be matched before the LIST and ARRAY cases.
             (DuckDBType.Map, _) when TryGetMapEntries(item, out var entries) => CreateMapValue(logicalType, entries, dbType),
@@ -111,407 +132,27 @@ internal static class ClrToDuckDBConverter
             (DuckDBType.Array, ICollection value) => CreateCollectionValue(logicalType, value, false, dbType),
             (_, ICollection value) when item is not byte[] => CreateListFromClrType(value, dbType),
             _ when ValueCreators.TryGetValue(dbType, out var converter) => converter(item),
-            _ => NativeMethods.Value.DuckDBCreateVarchar(item.ToString())
+            _ => CreateVarchar(item.ToString())
         };
-    }
 
-    public static bool TryBindScalarValue(this object? item, DuckDBPreparedStatement statement, long index, DuckDBType duckDBType, DbType dbType, out DuckDBState result)
-    {
-        if (item.IsNull())
+        bool TryConvertTo<T>(out T result) where T : struct
         {
-            result = NativeMethods.PreparedStatements.DuckDBBindNull(statement, index);
-            return true;
-        }
+            try
+            {
+                if (item is T parsable)
+                {
+                    result = parsable;
+                    return true;
+                }
 
-        switch (duckDBType, item)
-        {
-            case (DuckDBType.Boolean, bool booleanValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindBoolean(statement, index, booleanValue);
+                result = (T)Convert.ChangeType(item, typeof(T));
                 return true;
-
-            case (DuckDBType.TinyInt, _):
-                result = TryConvertTo(item, out sbyte int8Value)
-                    ? NativeMethods.PreparedStatements.DuckDBBindInt8(statement, index, int8Value)
-                    : NativeMethods.PreparedStatements.DuckDBBindVarchar(statement, index, item.ToString()!);
-                return true;
-            case (DuckDBType.SmallInt, _):
-                result = TryConvertTo(item, out short int16Value)
-                    ? NativeMethods.PreparedStatements.DuckDBBindInt16(statement, index, int16Value)
-                    : NativeMethods.PreparedStatements.DuckDBBindVarchar(statement, index, item.ToString()!);
-                return true;
-            case (DuckDBType.Integer, _):
-                result = TryConvertTo(item, out int int32Value)
-                    ? NativeMethods.PreparedStatements.DuckDBBindInt32(statement, index, int32Value)
-                    : NativeMethods.PreparedStatements.DuckDBBindVarchar(statement, index, item.ToString()!);
-                return true;
-            case (DuckDBType.BigInt, _):
-                result = TryConvertTo(item, out long int64Value)
-                    ? NativeMethods.PreparedStatements.DuckDBBindInt64(statement, index, int64Value)
-                    : NativeMethods.PreparedStatements.DuckDBBindVarchar(statement, index, item.ToString()!);
-                return true;
-
-            case (DuckDBType.UnsignedTinyInt, _):
-                result = TryConvertTo(item, out byte uint8Value)
-                    ? NativeMethods.PreparedStatements.DuckDBBindUInt8(statement, index, uint8Value)
-                    : NativeMethods.PreparedStatements.DuckDBBindVarchar(statement, index, item.ToString()!);
-                return true;
-            case (DuckDBType.UnsignedSmallInt, _):
-                result = TryConvertTo(item, out ushort uint16Value)
-                    ? NativeMethods.PreparedStatements.DuckDBBindUInt16(statement, index, uint16Value)
-                    : NativeMethods.PreparedStatements.DuckDBBindVarchar(statement, index, item.ToString()!);
-                return true;
-            case (DuckDBType.UnsignedInteger, _):
-                result = TryConvertTo(item, out uint uint32Value)
-                    ? NativeMethods.PreparedStatements.DuckDBBindUInt32(statement, index, uint32Value)
-                    : NativeMethods.PreparedStatements.DuckDBBindVarchar(statement, index, item.ToString()!);
-                return true;
-            case (DuckDBType.UnsignedBigInt, _):
-                result = TryConvertTo(item, out ulong uint64Value)
-                    ? NativeMethods.PreparedStatements.DuckDBBindUInt64(statement, index, uint64Value)
-                    : NativeMethods.PreparedStatements.DuckDBBindVarchar(statement, index, item.ToString()!);
-                return true;
-
-            case (DuckDBType.Float, float floatValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindFloat(statement, index, floatValue);
-                return true;
-            case (DuckDBType.Double, double doubleValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindDouble(statement, index, doubleValue);
-                return true;
-            case (DuckDBType.Decimal, decimal decimalValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindDecimal(statement, index, ToDuckDBDecimal(decimalValue));
-                return true;
-            case (DuckDBType.HugeInt, BigInteger hugeIntValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindHugeInt(statement, index, new DuckDBHugeInt(hugeIntValue));
-                return true;
-
-            case (DuckDBType.Varchar, string stringValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindVarchar(statement, index, stringValue);
-                return true;
-            case (DuckDBType.Timestamp, DateTime timestampValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindTimestamp(statement, index, timestampValue.ToTimestampStruct(duckDBType));
-                return true;
-            case (DuckDBType.TimestampTz, DateTime timestampTzValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindTimestampTz(statement, index, timestampTzValue.ToTimestampStruct(duckDBType));
-                return true;
-            case (DuckDBType.TimestampTz, DateTimeOffset timestampOffsetValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindTimestampTz(statement, index, timestampOffsetValue.ToTimestampStruct());
-                return true;
-            case (DuckDBType.Interval, TimeSpan intervalValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindInterval(statement, index, intervalValue);
-                return true;
-            case (DuckDBType.Date, DateTime dateTimeValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindDate(statement, index, ((DuckDBDateOnly)dateTimeValue).ToDuckDBDate());
-                return true;
-            case (DuckDBType.Date, DuckDBDateOnly duckDBDateValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindDate(statement, index, duckDBDateValue.ToDuckDBDate());
-                return true;
-            case (DuckDBType.Date, DateOnly dateOnlyValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindDate(statement, index, ((DuckDBDateOnly)dateOnlyValue).ToDuckDBDate());
-                return true;
-            case (DuckDBType.Time, DateTime timeDateTimeValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindTime(statement, index, NativeMethods.DateTimeHelpers.DuckDBToTime((DuckDBTimeOnly)timeDateTimeValue));
-                return true;
-            case (DuckDBType.Time, DuckDBTimeOnly duckDBTimeValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindTime(statement, index, NativeMethods.DateTimeHelpers.DuckDBToTime(duckDBTimeValue));
-                return true;
-            case (DuckDBType.Time, TimeOnly timeOnlyValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindTime(statement, index, NativeMethods.DateTimeHelpers.DuckDBToTime(timeOnlyValue));
-                return true;
-            case (DuckDBType.Blob, byte[] blobValue):
-                result = NativeMethods.PreparedStatements.DuckDBBindBlob(statement, index, blobValue, blobValue.LongLength);
-                return true;
-        }
-
-        // These logical types need the exact duckdb_value representation because the scalar C API
-        // has no equivalent binder, or because its timestamp unit differs from duckdb_bind_timestamp.
-        // TIMESTAMP_TZ_NS and TIME_NS hold nanoseconds; the scalar binders would drop the seventh digit of a tick.
-        if (item is Guid ||
-            duckDBType is DuckDBType.TimestampTzNs or DuckDBType.TimeNs ||
-            item is DateTime && duckDBType is DuckDBType.TimestampS or DuckDBType.TimestampMs or DuckDBType.TimestampNs ||
-            item is DateTimeOffset && duckDBType == DuckDBType.TimeTz ||
-            item is ICollection && (item is not byte[] || duckDBType is DuckDBType.List or DuckDBType.Array))
-        {
-            result = default;
-            return false;
-        }
-
-        switch (dbType)
-        {
-            case DbType.Currency:
-                result = NativeMethods.PreparedStatements.DuckDBBindDecimal(statement, index, ToDuckDBDecimal((decimal)item));
-                return true;
-            case DbType.Boolean:
-                result = NativeMethods.PreparedStatements.DuckDBBindBoolean(statement, index, (bool)item);
-                return true;
-            case DbType.SByte:
-                result = NativeMethods.PreparedStatements.DuckDBBindInt8(statement, index, (sbyte)item);
-                return true;
-            case DbType.Int16:
-                result = NativeMethods.PreparedStatements.DuckDBBindInt16(statement, index, (short)item);
-                return true;
-            case DbType.Int32:
-                result = NativeMethods.PreparedStatements.DuckDBBindInt32(statement, index, (int)item);
-                return true;
-            case DbType.Int64:
-                result = NativeMethods.PreparedStatements.DuckDBBindInt64(statement, index, (long)item);
-                return true;
-            case DbType.Byte:
-                result = NativeMethods.PreparedStatements.DuckDBBindUInt8(statement, index, (byte)item);
-                return true;
-            case DbType.UInt16:
-                result = NativeMethods.PreparedStatements.DuckDBBindUInt16(statement, index, (ushort)item);
-                return true;
-            case DbType.UInt32:
-                result = NativeMethods.PreparedStatements.DuckDBBindUInt32(statement, index, (uint)item);
-                return true;
-            case DbType.UInt64:
-                result = NativeMethods.PreparedStatements.DuckDBBindUInt64(statement, index, (ulong)item);
-                return true;
-            case DbType.Single:
-                result = NativeMethods.PreparedStatements.DuckDBBindFloat(statement, index, (float)item);
-                return true;
-            case DbType.Double:
-                result = NativeMethods.PreparedStatements.DuckDBBindDouble(statement, index, (double)item);
-                return true;
-            case DbType.String:
-                result = NativeMethods.PreparedStatements.DuckDBBindVarchar(statement, index, (string)item);
-                return true;
-            case DbType.VarNumeric:
-                result = NativeMethods.PreparedStatements.DuckDBBindHugeInt(statement, index, new DuckDBHugeInt((BigInteger)item));
-                return true;
-            case DbType.Binary:
-                var bytes = (byte[])item;
-                result = NativeMethods.PreparedStatements.DuckDBBindBlob(statement, index, bytes, bytes.LongLength);
-                return true;
-            case DbType.Date:
-                var date = (item is DateOnly dateOnly ? (DuckDBDateOnly)dateOnly : (DuckDBDateOnly)item).ToDuckDBDate();
-                result = NativeMethods.PreparedStatements.DuckDBBindDate(statement, index, date);
-                return true;
-            case DbType.Time:
-                var time = NativeMethods.DateTimeHelpers.DuckDBToTime(item is TimeOnly timeOnly ? (DuckDBTimeOnly)timeOnly : (DuckDBTimeOnly)item);
-                result = NativeMethods.PreparedStatements.DuckDBBindTime(statement, index, time);
-                return true;
-            case DbType.DateTime:
-                var timestamp = (item is DateTime dateTime ? (DuckDBTimestamp)dateTime : (DuckDBTimestamp)item).ToDuckDBTimestampStruct();
-                result = NativeMethods.PreparedStatements.DuckDBBindTimestamp(statement, index, timestamp);
-                return true;
-            case DbType.DateTimeOffset:
-                result = NativeMethods.PreparedStatements.DuckDBBindTimestampTz(statement, index, ((DateTimeOffset)item).ToTimestampStruct());
-                return true;
-            default:
+            }
+            catch (Exception)
+            {
                 result = default;
                 return false;
-        }
-    }
-
-    internal static bool TryBindTypedScalarValue<T>(
-        T item,
-        DuckDBPreparedStatement statement,
-        long index,
-        DuckDBType duckDBType,
-        out DuckDBState result)
-    {
-        if (item is null)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindNull(statement, index);
-            return true;
-        }
-
-        if (typeof(T) == typeof(bool) && duckDBType == DuckDBType.Boolean)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindBoolean(
-                statement, index, Unsafe.As<T, bool>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(sbyte) && duckDBType == DuckDBType.TinyInt)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindInt8(
-                statement, index, Unsafe.As<T, sbyte>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(short) && duckDBType == DuckDBType.SmallInt)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindInt16(
-                statement, index, Unsafe.As<T, short>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(int) && duckDBType == DuckDBType.Integer)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindInt32(
-                statement, index, Unsafe.As<T, int>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(long) && duckDBType == DuckDBType.BigInt)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindInt64(
-                statement, index, Unsafe.As<T, long>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(byte) && duckDBType == DuckDBType.UnsignedTinyInt)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindUInt8(
-                statement, index, Unsafe.As<T, byte>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(ushort) && duckDBType == DuckDBType.UnsignedSmallInt)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindUInt16(
-                statement, index, Unsafe.As<T, ushort>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(uint) && duckDBType == DuckDBType.UnsignedInteger)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindUInt32(
-                statement, index, Unsafe.As<T, uint>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(ulong) && duckDBType == DuckDBType.UnsignedBigInt)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindUInt64(
-                statement, index, Unsafe.As<T, ulong>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(float) && duckDBType == DuckDBType.Float)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindFloat(
-                statement, index, Unsafe.As<T, float>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(double) && duckDBType == DuckDBType.Double)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindDouble(
-                statement, index, Unsafe.As<T, double>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(decimal) && duckDBType == DuckDBType.Decimal)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindDecimal(
-                statement, index, ToDuckDBDecimal(Unsafe.As<T, decimal>(ref item)));
-            return true;
-        }
-
-        if (typeof(T) == typeof(BigInteger) && duckDBType == DuckDBType.HugeInt)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindHugeInt(
-                statement, index, new DuckDBHugeInt(Unsafe.As<T, BigInteger>(ref item)));
-            return true;
-        }
-
-        if (typeof(T) == typeof(string) && duckDBType == DuckDBType.Varchar)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindVarchar(
-                statement, index, Unsafe.As<T, string>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(DateTime))
-        {
-            var value = Unsafe.As<T, DateTime>(ref item);
-            switch (duckDBType)
-            {
-                case DuckDBType.Timestamp:
-                    result = NativeMethods.PreparedStatements.DuckDBBindTimestamp(
-                        statement, index, value.ToTimestampStruct(duckDBType));
-                    return true;
-                case DuckDBType.TimestampTz:
-                    result = NativeMethods.PreparedStatements.DuckDBBindTimestampTz(
-                        statement, index, value.ToTimestampStruct(duckDBType));
-                    return true;
-                case DuckDBType.Date:
-                    result = NativeMethods.PreparedStatements.DuckDBBindDate(
-                        statement, index, ((DuckDBDateOnly)value).ToDuckDBDate());
-                    return true;
-                case DuckDBType.Time:
-                    result = NativeMethods.PreparedStatements.DuckDBBindTime(
-                        statement, index, NativeMethods.DateTimeHelpers.DuckDBToTime((DuckDBTimeOnly)value));
-                    return true;
             }
-        }
-
-        if (typeof(T) == typeof(DateTimeOffset) && duckDBType == DuckDBType.TimestampTz)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindTimestampTz(
-                statement, index, Unsafe.As<T, DateTimeOffset>(ref item).ToTimestampStruct());
-            return true;
-        }
-
-        if (typeof(T) == typeof(TimeSpan) && duckDBType == DuckDBType.Interval)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindInterval(
-                statement, index, Unsafe.As<T, TimeSpan>(ref item));
-            return true;
-        }
-
-        if (typeof(T) == typeof(DateOnly) && duckDBType == DuckDBType.Date)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindDate(
-                statement, index, ((DuckDBDateOnly)Unsafe.As<T, DateOnly>(ref item)).ToDuckDBDate());
-            return true;
-        }
-
-        if (typeof(T) == typeof(TimeOnly) && duckDBType == DuckDBType.Time)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindTime(
-                statement, index,
-                NativeMethods.DateTimeHelpers.DuckDBToTime(Unsafe.As<T, TimeOnly>(ref item)));
-            return true;
-        }
-
-        if (typeof(T) == typeof(DuckDBDateOnly) && duckDBType == DuckDBType.Date)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindDate(
-                statement, index, Unsafe.As<T, DuckDBDateOnly>(ref item).ToDuckDBDate());
-            return true;
-        }
-
-        if (typeof(T) == typeof(DuckDBTimeOnly) && duckDBType == DuckDBType.Time)
-        {
-            result = NativeMethods.PreparedStatements.DuckDBBindTime(
-                statement, index,
-                NativeMethods.DateTimeHelpers.DuckDBToTime(Unsafe.As<T, DuckDBTimeOnly>(ref item)));
-            return true;
-        }
-
-        if (typeof(T) == typeof(byte[]) && duckDBType == DuckDBType.Blob)
-        {
-            var value = Unsafe.As<T, byte[]>(ref item);
-            result = NativeMethods.PreparedStatements.DuckDBBindBlob(
-                statement, index, value, value.LongLength);
-            return true;
-        }
-
-        result = default;
-        return false;
-    }
-
-    private static bool TryConvertTo<T>(object item, out T result) where T : struct
-    {
-        try
-        {
-            if (item is T parsable)
-            {
-                result = parsable;
-                return true;
-            }
-
-            result = (T)Convert.ChangeType(item, typeof(T));
-            return true;
-        }
-        catch (Exception)
-        {
-            result = default;
-            return false;
         }
     }
 
@@ -522,8 +163,10 @@ internal static class ClrToDuckDBConverter
 
         var values = BuildValues(childType, collection, dbType);
 
-        return isList ? NativeMethods.Value.DuckDBCreateListValue(childType, values, collection.Count)
-                      : NativeMethods.Value.DuckDBCreateArrayValue(childType, values, collection.Count);
+        var value = isList ? NativeMethods.Value.DuckDBCreateListValue(childType, values, collection.Count)
+                           : NativeMethods.Value.DuckDBCreateArrayValue(childType, values, collection.Count);
+
+        return ThrowIfNotCreated(value, values, childType, isList ? "list" : "array");
     }
 
     private static DuckDBValue CreateListFromClrType(ICollection collection, DbType dbType)
@@ -532,27 +175,37 @@ internal static class ClrToDuckDBConverter
 
         if (elementType == null)
         {
-            return NativeMethods.Value.DuckDBCreateVarchar(collection.ToString());
+            return CreateVarchar(collection.ToString());
         }
 
         using var childType = elementType.GetLogicalType();
         var values = BuildValues(childType, collection, dbType);
 
-        return NativeMethods.Value.DuckDBCreateListValue(childType, values, collection.Count);
+        return ThrowIfNotCreated(NativeMethods.Value.DuckDBCreateListValue(childType, values, collection.Count), values, childType, "list");
     }
 
-    private static DuckDBValue[] BuildValues(DuckDBLogicalType childType, ICollection collection, DbType dbType)
+    // DuckDB converts every item to the type of the items of the list or array. When one cannot be converted, an
+    // item out of range for example, it returns no value and does not say which item or why. Binding that would
+    // crash the process: duckdb_bind_value reads the value without testing for it.
+    private static DuckDBValue ThrowIfNotCreated(DuckDBValue value, DuckDBValue[] items, DuckDBLogicalType itemType, string kind)
     {
-        var childDuckDBType = NativeMethods.LogicalType.DuckDBGetTypeId(childType);
-        var values = new DuckDBValue[collection.Count];
-
-        var index = 0;
-        foreach (var item in collection)
+        if (!value.IsInvalid)
         {
-            values[index++] = item.ToDuckDBValue(childType, childDuckDBType, dbType);
+            return value;
         }
 
-        return values;
+        // A value that was not created does not own its items, so they are released here.
+        foreach (var item in items)
+        {
+            item.Dispose();
+        }
+
+        value.Dispose();
+
+        var itemTypeName = NativeMethods.LogicalType.DuckDBGetTypeId(itemType);
+
+        throw new DuckDBException($"Cannot create the {kind} value of a parameter: DuckDB could not convert every item to {itemTypeName}, the type of its items. " +
+                                  "An item may be out of range for that type.");
     }
 
     private static DuckDBValue CreateMapValue(DuckDBLogicalType mapType, MapEntry[] entries, DbType dbType)
@@ -685,17 +338,71 @@ internal static class ClrToDuckDBConverter
 
     private readonly record struct MapEntry(object? Key, object? Value);
 
-    private static DuckDBValue DecimalToDuckDBValue(decimal value)
-        => NativeMethods.Value.DuckDBCreateDecimal(ToDuckDBDecimal(value));
-
-    private static DuckDBDecimal ToDuckDBDecimal(decimal value)
+    private static DuckDBValue[] BuildValues(DuckDBLogicalType childType, ICollection collection, DbType dbType)
     {
-        var mantissa = value.GetMantissa();
+        var childDuckDBType = NativeMethods.LogicalType.DuckDBGetTypeId(childType);
+        var values = new DuckDBValue[collection.Count];
 
-        var width = mantissa.IsZero
-            ? value.Scale + 1
-            : Math.Max((int)BigInteger.Log10(BigInteger.Abs(mantissa)) + 1, value.Scale + 1);
+        var index = 0;
+        foreach (var item in collection)
+        {
+            values[index++] = item.ToDuckDBValue(childType, childDuckDBType, dbType);
+        }
 
-        return new DuckDBDecimal((byte)width, value.Scale, new DuckDBHugeInt(mantissa));
+        return values;
+    }
+
+    // DuckDB reported no type for the parameter, for example in "SELECT $1" or "$1::UHUGEINT", so pick the smallest
+    // type that holds the value exactly: HUGEINT, then UHUGEINT, then BIGNUM.
+    private static DuckDBValue BigIntegerWithoutTargetType(BigInteger value)
+    {
+        if (value >= DuckDBHugeInt.HugeIntMinValue && value <= DuckDBHugeInt.HugeIntMaxValue)
+        {
+            return NativeMethods.Value.DuckDBCreateHugeInt(new DuckDBHugeInt(value));
+        }
+
+        if (value >= DuckDBUHugeInt.HugeIntMinValue && value <= DuckDBUHugeInt.HugeIntMaxValue)
+        {
+            return NativeMethods.Value.DuckDBCreateUHugeInt(new DuckDBUHugeInt(value));
+        }
+
+        return BigIntegerToDuckDBValue(value);
+    }
+
+    private static unsafe DuckDBValue BigIntegerToDuckDBValue(BigInteger value)
+    {
+        // A BIGNUM is built from the magnitude bytes and a sign, which keeps values of any size exact.
+        // Going through HUGEINT instead would cap the value at 128 bits.
+        var isNegative = value.Sign < 0;
+        var magnitude = isNegative ? -value : value;
+        var bytes = magnitude.ToByteArray(isUnsigned: true, isBigEndian: true);
+
+        fixed (byte* data = bytes)
+        {
+            return NativeMethods.Value.DuckDBCreateBignum(new DuckDBBignum((IntPtr)data, (ulong)bytes.Length, isNegative ? (byte)1 : (byte)0));
+        }
+    }
+
+    // Encoded here and passed as bytes, so a NUL character in the string is kept. Never null: ToDuckDBValue sends a
+    // null value as NULL.
+    private static DuckDBValue CreateVarchar(string? value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return NativeMethods.Value.DuckDBCreateVarchar(Encoding.UTF8.GetBytes(value));
+    }
+
+    private static DuckDBValue DecimalToDuckDBValue(decimal value)
+    {
+        // The value goes to DuckDB as it is in the decimal: the integer, with the scale of the decimal. The writer of
+        // the appender starts from the same parts (DecimalVectorDataWriter).
+        value.GetParts(out var low, out var high, out var isNegative, out var scale);
+        var magnitude = new UInt128(high, low);
+
+        // The width is the number of digits. A value below one has a zero in front of its fraction.
+        var width = Math.Max(DecimalExtensions.CountDigits(magnitude), scale + 1);
+
+        var integer = isNegative ? -(Int128)magnitude : (Int128)magnitude;
+
+        return NativeMethods.Value.DuckDBCreateDecimal(new DuckDBDecimal((byte)width, scale, new DuckDBHugeInt(integer)));
     }
 }
