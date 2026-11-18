@@ -2,7 +2,6 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFrameworks>net10.0</TargetFrameworks>
     <SonarQubeExclude>true</SonarQubeExclude>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

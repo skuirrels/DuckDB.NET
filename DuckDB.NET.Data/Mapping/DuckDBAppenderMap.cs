@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 
 namespace DuckDB.NET.Data.Mapping;
 
@@ -132,12 +132,17 @@ internal sealed class PropertyMapping<T, TProperty> : IPropertyMapping<T>
             DateOnly v => row.AppendValue(v),
             TimeOnly v => row.AppendValue(v),
 
-            // MAP columns: dictionaries are written as their key/value entries.
-            IEnumerable v when IsDictionaryProperty => row.AppendMapValue(v),
-
-            _ => throw new NotSupportedException($"Type {typeof(TProperty).Name} is not supported for appending")
+            _ => AppendOther(row, value)
         };
     }
+
+    // MAP columns: a dictionary is written as its key/value entries. Out of line, not a pattern in the switch above:
+    // one more pattern there made AppendToRow about 10% slower for nullable properties, which never reach it.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static IDuckDBAppenderRow AppendOther(DuckDBAppenderRow row, TProperty value) =>
+        IsDictionaryProperty && value is IEnumerable entries
+            ? row.AppendMapValue(entries)
+            : throw new NotSupportedException($"Type {typeof(TProperty).Name} is not supported for appending");
 
     // Every type here has an AppendValue overload that takes its nullable, so the value is passed on as it is.
     // typeof(TProperty) is a constant for the JIT, which keeps the one matching line.
