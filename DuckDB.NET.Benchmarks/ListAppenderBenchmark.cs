@@ -1,18 +1,26 @@
-using BenchmarkDotNet.Attributes;
+﻿using BenchmarkDotNet.Attributes;
 using DuckDB.NET.Data;
-using System.Collections.ObjectModel;
 
 namespace DuckDB.NET.Benchmarks;
 
+// One list column, ten items in every list. The items of a list are written one at a time by the writer of the
+// item type, so the time is the cost of a list plus ten times the cost of an item.
+// AppendIntLists has no nullable item and is the reference for the others, where one item in ten is null.
 [MemoryDiagnoser]
 public class ListAppenderBenchmark
 {
-    private const int ItemCount = 32;
+    private const int ListCount = 1024;
+    private const int ItemCount = 10;
+
+    // Created once, so that the benchmarks do not measure the making of the lists.
+    private readonly List<int>[] intLists = new List<int>[ListCount];
+    private readonly List<int?>[] nullableIntLists = new List<int?>[ListCount];
+    private readonly int?[][] nullableIntArrays = new int?[ListCount][];
+
+    // Lists of three strings, where the work done once per list weighs more.
+    private readonly List<string>[] shortStringLists = new List<string>[ListCount];
 
     private DuckDBConnection connection = null!;
-    private int[] arrayValues = null!;
-    private List<int> listValues = null!;
-    private ReadOnlyCollection<int> readOnlyValues = null!;
 
     [Params(1_000_000)]
     public int RowCount { get; set; }
@@ -22,9 +30,27 @@ public class ListAppenderBenchmark
     {
         connection = new DuckDBConnection("DataSource=:memory:");
         connection.Open();
-        arrayValues = Enumerable.Range(0, ItemCount).ToArray();
-        listValues = arrayValues.ToList();
-        readOnlyValues = Array.AsReadOnly(arrayValues);
+
+        LoadedLibrary.Print(connection);
+
+        for (var i = 0; i < ListCount; i++)
+        {
+            intLists[i] = new List<int>(ItemCount);
+            nullableIntLists[i] = new List<int?>(ItemCount);
+
+            for (var item = 0; item < ItemCount; item++)
+            {
+                var value = i * ItemCount + item;
+                var isNull = (i + item) % ItemCount == 0;
+
+                intLists[i].Add(value);
+                nullableIntLists[i].Add(isNull ? null : value);
+            }
+
+            nullableIntArrays[i] = nullableIntLists[i].ToArray();
+
+            shortStringLists[i] = ["a" + i, "b" + i, "c" + i];
+        }
     }
 
     [GlobalCleanup]
@@ -33,64 +59,61 @@ public class ListAppenderBenchmark
         connection.Dispose();
     }
 
-    [IterationSetup]
-    public void IterationSetup()
+    private void CreateTable(string itemType)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = """
-            DROP TABLE IF EXISTS list_from_array;
-            DROP TABLE IF EXISTS list_from_list;
-            DROP TABLE IF EXISTS list_from_read_only_collection;
-            DROP TABLE IF EXISTS array_from_array;
-            CREATE TABLE list_from_array (values INTEGER[]);
-            CREATE TABLE list_from_list (values INTEGER[]);
-            CREATE TABLE list_from_read_only_collection (values INTEGER[]);
-            CREATE TABLE array_from_array (values INTEGER[32]);
-            """;
+        command.CommandText = $"DROP TABLE IF EXISTS bench; CREATE TABLE bench (l {itemType}[]);";
         command.ExecuteNonQuery();
     }
 
-    [Benchmark(Baseline = true)]
-    public void AppendListFromArray()
-    {
-        using var appender = connection.CreateAppender("list_from_array");
+    [IterationSetup(Target = nameof(AppendShortStringLists))]
+    public void StringSetup() => CreateTable("VARCHAR");
 
-        for (var index = 0; index < RowCount; index++)
+    [IterationSetup(Targets = [nameof(AppendIntLists), nameof(AppendNullableIntLists), nameof(AppendNullableIntArrays)])]
+    public void IntegerSetup() => CreateTable("INTEGER");
+
+    [Benchmark]
+    public void AppendIntLists()
+    {
+        using var appender = connection.CreateAppender("bench");
+
+        for (var i = 0; i < RowCount; i++)
         {
-            appender.AppendRow(arrayValues, static (row, values) => row.AppendValue(values));
+            appender.AppendRow(intLists[i % ListCount], static (row, value) => row.AppendValue(value));
         }
     }
 
     [Benchmark]
-    public void AppendListFromList()
+    public void AppendNullableIntLists()
     {
-        using var appender = connection.CreateAppender("list_from_list");
+        using var appender = connection.CreateAppender("bench");
 
-        for (var index = 0; index < RowCount; index++)
+        for (var i = 0; i < RowCount; i++)
         {
-            appender.AppendRow(listValues, static (row, values) => row.AppendValue(values));
+            appender.AppendRow(nullableIntLists[i % ListCount], static (row, value) => row.AppendValue(value));
         }
     }
 
     [Benchmark]
-    public void AppendListFromReadOnlyCollection()
+    public void AppendNullableIntArrays()
     {
-        using var appender = connection.CreateAppender("list_from_read_only_collection");
+        using var appender = connection.CreateAppender("bench");
 
-        for (var index = 0; index < RowCount; index++)
+        for (var i = 0; i < RowCount; i++)
         {
-            appender.AppendRow(readOnlyValues, static (row, values) => row.AppendValue(values));
+            appender.AppendRow(nullableIntArrays[i % ListCount], static (row, value) => row.AppendValue(value));
         }
     }
 
     [Benchmark]
-    public void AppendArrayFromArray()
+    public void AppendShortStringLists()
     {
-        using var appender = connection.CreateAppender("array_from_array");
+        using var appender = connection.CreateAppender("bench");
 
-        for (var index = 0; index < RowCount; index++)
+        for (var i = 0; i < RowCount; i++)
         {
-            appender.AppendRow(arrayValues, static (row, values) => row.AppendValue(values));
+            appender.AppendRow(shortStringLists[i % ListCount], static (row, value) => row.AppendValue(value));
         }
     }
+
 }

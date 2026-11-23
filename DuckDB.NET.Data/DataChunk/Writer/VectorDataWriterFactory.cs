@@ -11,7 +11,8 @@ internal static class VectorDataWriterFactory
         {
             DuckDBType.Uuid => new GuidVectorDataWriter(vector, dataPointer, columnType),
             DuckDBType.Date => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
-            DuckDBType.Time => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
+            DuckDBType.Time => new TimeVectorDataWriter<DuckDBTime>(vector, dataPointer, columnType),
+            DuckDBType.TimeNs => new TimeVectorDataWriter<DuckDBTimeNs>(vector, dataPointer, columnType),
             DuckDBType.TimeTz => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
             DuckDBType.Interval => new IntervalVectorDataWriter(vector, dataPointer, columnType),
             DuckDBType.Timestamp => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
@@ -20,7 +21,7 @@ internal static class VectorDataWriterFactory
 
             DuckDBType.Map => new MapVectorDataWriter(vector, dataPointer, columnType, logicalType),
             DuckDBType.List => new ListVectorDataWriter(vector, dataPointer, columnType, logicalType),
-            DuckDBType.Array => new ListVectorDataWriter(vector, dataPointer, columnType, logicalType),
+            DuckDBType.Array => new ArrayVectorDataWriter(vector, dataPointer, columnType, logicalType),
             DuckDBType.Blob => new StringVectorDataWriter(vector, dataPointer, columnType),
             DuckDBType.Varchar => new StringVectorDataWriter(vector, dataPointer, columnType),
             DuckDBType.Bit => throw new NotImplementedException($"Writing {columnType} to data chunk is not yet supported"),
@@ -32,8 +33,19 @@ internal static class VectorDataWriterFactory
             DuckDBType.TimestampNs => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
             DuckDBType.TimestampTz => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
             DuckDBType.TimestampTzNs => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
-            DuckDBType.TimeNs => new DateTimeVectorDataWriter(vector, dataPointer, columnType),
-            _ => new NumericVectorDataWriter(vector, dataPointer, columnType)
+            DuckDBType.TinyInt => new NumericVectorDataWriter<sbyte>(vector, dataPointer, columnType),
+            DuckDBType.SmallInt => new NumericVectorDataWriter<short>(vector, dataPointer, columnType),
+            DuckDBType.Integer => new NumericVectorDataWriter<int>(vector, dataPointer, columnType),
+            DuckDBType.BigInt => new NumericVectorDataWriter<long>(vector, dataPointer, columnType),
+            DuckDBType.UnsignedTinyInt => new NumericVectorDataWriter<byte>(vector, dataPointer, columnType),
+            DuckDBType.UnsignedSmallInt => new NumericVectorDataWriter<ushort>(vector, dataPointer, columnType),
+            DuckDBType.UnsignedInteger => new NumericVectorDataWriter<uint>(vector, dataPointer, columnType),
+            DuckDBType.UnsignedBigInt => new NumericVectorDataWriter<ulong>(vector, dataPointer, columnType),
+            DuckDBType.HugeInt => new NumericVectorDataWriter<Int128>(vector, dataPointer, columnType),
+            DuckDBType.UnsignedHugeInt => new NumericVectorDataWriter<UInt128>(vector, dataPointer, columnType),
+            DuckDBType.Float => new NumericVectorDataWriter<float>(vector, dataPointer, columnType),
+            DuckDBType.Double => new NumericVectorDataWriter<double>(vector, dataPointer, columnType),
+            _ => new NumericVectorDataWriter<NoStorage>(vector, dataPointer, columnType)
         };
     }
 }

@@ -1,4 +1,5 @@
 ﻿using System.Globalization;
+using System.Reflection;
 using DuckDB.NET.Data.Common;
 using FluentAssertions.Common;
 
@@ -121,9 +122,9 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
 
         using (var appender = Connection.CreateAppender("blobAppenderTest"))
         {
-            appender.CreateRow().AppendValue(1).AppendValue(bytes).EndRow();
-            appender.CreateRow().AppendValue(10).AppendValue(span).EndRow();
-            appender.CreateRow().AppendValue(2).AppendValue((byte[])null).EndRow();
+            appender.CreateRow().AppendValue((int?)1).AppendValue(bytes).EndRow();
+            appender.CreateRow().AppendValue((int?)10).AppendValue(span).EndRow();
+            appender.CreateRow().AppendValue((int?)2).AppendValue((byte[])null).EndRow();
         }
 
         Command.CommandText = "Select b from blobAppenderTest";
@@ -144,6 +145,92 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
 
         dataReader.Read();
         dataReader.IsDBNull(0).Should().BeTrue();
+    }
+
+    [Fact]
+    public void EmptyByteArrayIsEmptyBlobAndDefaultSpanIsNull()
+    {
+        // Only a BLOB column, ordered by rowid: an integer literal such as AppendValue(1) binds to the sbyte? overload,
+        // which the low-level appender would write into one byte of an INTEGER slot.
+        Command.CommandText = "CREATE TABLE blobAppenderEmptyTest(b blob)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("blobAppenderEmptyTest"))
+        {
+            appender.CreateRow().AppendValue(Array.Empty<byte>()).EndRow();
+            appender.CreateRow().AppendValue(new Span<byte>(Array.Empty<byte>())).EndRow();
+            appender.CreateRow().AppendValue(default(Span<byte>)).EndRow();
+        }
+
+        var results = Connection.Query<(bool IsNull, long? Length)>(
+            "SELECT b IS NULL, octet_length(b) FROM blobAppenderEmptyTest ORDER BY rowid").ToList();
+
+        results.Should().Equal((false, 0L), (false, 0L), (true, null));
+    }
+
+    [Fact]
+    public void UnsignedHugeIntAboveSignedHugeIntRange()
+    {
+        // Only UHUGEINT columns, ordered by rowid: the low-level appender does no type checking.
+        Command.CommandText = "CREATE TABLE uhugeintAppenderTest(a UHUGEINT, b UHUGEINT[])";
+        Command.ExecuteNonQuery();
+
+        BigInteger?[] values =
+        [
+            BigInteger.Zero,
+            DuckDBHugeInt.HugeIntMaxValue,
+            BigInteger.Pow(2, 127) + 42,
+            DuckDBUHugeInt.HugeIntMaxValue,
+        ];
+
+        using (var appender = Connection.CreateAppender("uhugeintAppenderTest"))
+        {
+            foreach (var value in values)
+            {
+                appender.CreateRow().AppendValue(value).AppendValue(new List<BigInteger> { value.Value, value.Value }).EndRow();
+            }
+        }
+
+        Command.CommandText = "SELECT a, b, a::VARCHAR FROM uhugeintAppenderTest ORDER BY rowid";
+        using var reader = Command.ExecuteReader();
+
+        foreach (var value in values)
+        {
+            reader.Read().Should().BeTrue();
+            reader.GetFieldValue<BigInteger>(0).Should().Be(value.Value);
+            reader.GetFieldValue<List<BigInteger>>(1).Should().Equal(value.Value, value.Value);
+            reader.GetString(2).Should().Be(value.Value.ToString());
+        }
+
+        reader.Read().Should().BeFalse();
+    }
+
+    [Fact]
+    public void UnsignedHugeIntRejectsValuesOutOfRange()
+    {
+        Command.CommandText = "CREATE TABLE uhugeintAppenderRangeTest(a UHUGEINT)";
+        Command.ExecuteNonQuery();
+
+        BigInteger? negative = BigInteger.MinusOne;
+        BigInteger? tooLarge = DuckDBUHugeInt.HugeIntMaxValue + 1;
+        BigInteger? valid = BigInteger.Pow(2, 127);
+
+        using (var appender = Connection.CreateAppender("uhugeintAppenderRangeTest"))
+        {
+            var row = appender.CreateRow();
+
+            row.Invoking(r => r.AppendValue(negative)).Should().Throw<ArgumentOutOfRangeException>();
+            row.Invoking(r => r.AppendValue(tooLarge)).Should().Throw<ArgumentOutOfRangeException>();
+
+            row.AppendValue(valid).EndRow();
+        }
+
+        Command.CommandText = "SELECT a::VARCHAR FROM uhugeintAppenderRangeTest";
+        using var reader = Command.ExecuteReader();
+
+        reader.Read().Should().BeTrue();
+        reader.GetString(0).Should().Be(valid.Value.ToString());
+        reader.Read().Should().BeFalse();
     }
 
     [Fact]
@@ -248,7 +335,7 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
     [Fact]
     public void HighScaleDecimals()
     {
-        // Scale 30 exceeds .NET decimal's max scale (28), exercising the BigInteger rescaling
+        // Scale 30 exceeds .NET decimal's max scale (28), exercising the 128-bit rescaling
         // path in DecimalVectorDataWriter. Before the fix, this would crash with IndexOutOfRangeException.
         Command.CommandText = "CREATE TABLE managedAppenderHighScaleDecimals(value DECIMAL(38, 30))";
         Command.ExecuteNonQuery();
@@ -368,6 +455,108 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
         }
     }
 
+    // Pins that a DateOnly, TimeOnly, DuckDBDateOnly or DuckDBTimeOnly argument, nullable or not, compiles through the
+    // row interface (the DuckDB types convert only explicitly to DateOnly and TimeOnly, so each binds to its own
+    // overload) and that each stores the right value. Which conversion path a value takes cannot be seen from the
+    // values it stores, except for a value DateOnly or TimeOnly cannot hold: an infinity and 24:00:00 would throw if
+    // they went through the conversion.
+    [Fact]
+    public void DateAndTimeValuesThroughTheRowInterface()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderDateTimeOnly(a DATE, b TIME, c DATE, d TIME)";
+        Command.ExecuteNonQuery();
+
+        var date = new DateOnly(2024, 2, 29);
+        var time = new TimeOnly(13, 14, 15, 123);
+        DuckDBDateOnly duckDBDate = new DateOnly(1969, 7, 20);
+        DuckDBTimeOnly duckDBTime = new TimeOnly(20, 17, 40);
+        DateOnly? nullDate = null;
+        TimeOnly? nullTime = null;
+        DuckDBDateOnly? nullDuckDBDate = null;
+        DuckDBTimeOnly? nullDuckDBTime = null;
+
+        using (var appender = Connection.CreateAppender("managedAppenderDateTimeOnly"))
+        {
+            // The calls go through the interface, which is what CreateRow returns.
+            IDuckDBAppenderRow row = appender.CreateRow();
+            row.AppendValue(date).AppendValue(time).AppendValue(duckDBDate).AppendValue(duckDBTime).EndRow();
+
+            row = appender.CreateRow();
+            row.AppendValue((DateOnly?)date).AppendValue((TimeOnly?)time)
+               .AppendValue((DuckDBDateOnly?)duckDBDate).AppendValue((DuckDBTimeOnly?)duckDBTime).EndRow();
+
+            row = appender.CreateRow();
+            row.AppendValue(nullDate).AppendValue(nullTime).AppendValue(nullDuckDBDate).AppendValue(nullDuckDBTime).EndRow();
+
+            row = appender.CreateRow();
+            row.AppendValue(date).AppendValue(time).AppendValue(DuckDBDateOnly.PositiveInfinity)
+               .AppendValue(new DuckDBTimeOnly(24, 0, 0)).EndRow();
+        }
+
+        Command.CommandText = "SELECT a, b, c, d FROM managedAppenderDateTimeOnly ORDER BY rowid";
+        using var reader = Command.ExecuteReader();
+
+        for (var i = 0; i < 2; i++)
+        {
+            reader.Read().Should().BeTrue();
+            reader.GetFieldValue<DateOnly>(0).Should().Be(date);
+            reader.GetFieldValue<TimeOnly>(1).Should().Be(time);
+            reader.GetFieldValue<DateOnly>(2).Should().Be(new DateOnly(1969, 7, 20));
+            reader.GetFieldValue<TimeOnly>(3).Should().Be(new TimeOnly(20, 17, 40));
+        }
+
+        reader.Read().Should().BeTrue();
+        for (var column = 0; column < 4; column++)
+        {
+            reader.IsDBNull(column).Should().BeTrue();
+        }
+
+        reader.Read().Should().BeTrue();
+        reader.GetFieldValue<DuckDBDateOnly>(2).IsPositiveInfinity.Should().BeTrue();
+        reader.GetFieldValue<DuckDBTimeOnly>(3).Should().Be(new DuckDBTimeOnly(24, 0, 0));
+
+        reader.Read().Should().BeFalse();
+    }
+
+    // An implicit conversion from DuckDBDateOnly to DateOnly, or from DuckDBTimeOnly to TimeOnly, would make
+    // AppendValue(DateOnly?) and AppendValue(DuckDBDateOnly?) ambiguous for a non-nullable argument, and it can throw.
+    [Fact]
+    public void DuckDBDateAndTimeConvertOnlyExplicitlyToDateOnlyAndTimeOnly()
+    {
+        static IEnumerable<string> Operators(Type from, Type to) =>
+            from.GetMethods().Where(m => m.Name.StartsWith("op_") && m.ReturnType == to && m.GetParameters().Single().ParameterType == from).Select(m => m.Name);
+
+        Operators(typeof(DuckDBDateOnly), typeof(DateOnly)).Should().Equal("op_Explicit");
+        Operators(typeof(DuckDBTimeOnly), typeof(TimeOnly)).Should().Equal("op_Explicit");
+    }
+
+    // The stored values cannot show which overload a call reached: a DateOnly sent to AppendValue(DuckDBDateOnly?)
+    // stores the same date, only through the slower conversion. A recording row shows the overload itself.
+    [Fact]
+    public void DateAndTimeValuesReachTheOverloadOfTheirOwnType()
+    {
+        var row = DispatchProxy.Create<IDuckDBAppenderRow, RecordingAppenderRow>();
+        var recording = (RecordingAppenderRow)(object)row;
+
+        row.AppendValue(new DateOnly(2024, 2, 29));
+        row.AppendValue(new TimeOnly(13, 14, 15));
+        row.AppendValue(new DuckDBDateOnly(2024, 2, 29));
+        row.AppendValue(new DuckDBTimeOnly(13, 14, 15));
+
+        recording.ParameterTypes.Should().Equal(typeof(DateOnly?), typeof(TimeOnly?), typeof(DuckDBDateOnly?), typeof(DuckDBTimeOnly?));
+    }
+
+    public class RecordingAppenderRow : DispatchProxy
+    {
+        public List<Type> ParameterTypes { get; } = [];
+
+        protected override object Invoke(MethodInfo targetMethod, object[] args)
+        {
+            ParameterTypes.Add(targetMethod.GetParameters().Single().ParameterType);
+            return this;
+        }
+    }
+
     [Fact]
     public void EnumValues()
     {
@@ -477,7 +666,7 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
             var row = appender.CreateRow();
             row
                 .AppendValue(false)
-                .AppendValue(1)
+                .AppendValue((sbyte?)1)
                 .AppendValue(Guid.NewGuid())
                 .EndRow();
         }).Should().Throw<InvalidOperationException>();
@@ -705,8 +894,8 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
 
         using (var appender = Connection.CreateAppender("tbl"))
         {
-            appender.CreateRow().AppendValue((int?)2).AppendValue(2).AppendDefault().EndRow();
-            appender.CreateRow().AppendDefault().AppendValue(2).AppendDefault().EndRow();
+            appender.CreateRow().AppendValue((int?)2).AppendValue((int?)2).AppendDefault().EndRow();
+            appender.CreateRow().AppendDefault().AppendValue((int?)2).AppendDefault().EndRow();
         }
 
         Command.CommandText = "Select * from tbl";
@@ -878,48 +1067,6 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
     }
 
     [Fact]
-    public void AppendRowScopedPreparationFailureFaultsAppenderAtChunkBoundary()
-    {
-        Command.CommandText = "CREATE TABLE managedAppenderStackOnlyPreparationFailure(id INTEGER)";
-        Command.ExecuteNonQuery();
-
-        using (var appender = Connection.CreateAppender("managedAppenderStackOnlyPreparationFailure"))
-        {
-            for (var i = 0; i < checked((int)DuckDBGlobalData.VectorSize); i++)
-            {
-                appender.AppendRowScoped(i,
-                    static (ref DuckDBAppenderRowWriter writer, int value) =>
-                        writer.AppendValue((int?)value));
-            }
-
-            // Constraint checks are deferred until duckdb_appender_close, so close the native
-            // handle directly to deterministically exercise a failure in the next managed
-            // vector-boundary flush before CreateReusableRow can return a row.
-            var nativeAppenderField = typeof(DuckDB.NET.Data.DuckDBAppender).GetField(
-                "nativeAppender",
-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-            nativeAppenderField.Should().NotBeNull();
-            var nativeAppender = nativeAppenderField!.GetValue(appender)
-                .Should().BeOfType<DuckDB.NET.Native.DuckDBAppender>().Subject;
-            nativeAppender.Close();
-
-            var failure = appender.Invoking(value => value.AppendRowScoped(2,
-                    static (ref DuckDBAppenderRowWriter writer, int state) =>
-                        writer.AppendValue((int?)state)))
-                .Should().Throw<AggregateException>().Which;
-
-            failure.InnerExceptions.Should().HaveCount(2)
-                .And.OnlyContain(exception => exception is ObjectDisposedException);
-
-            appender.Invoking(value => value.AppendRowScoped(3,
-                    static (ref DuckDBAppenderRowWriter writer, int state) =>
-                        writer.AppendValue((int?)state)))
-                .Should().Throw<InvalidOperationException>()
-                .WithMessage("*cannot be reused*");
-        }
-    }
-
-    [Fact]
     public void IncompleteAppendRowScopedDiscardsFailedRowAndFaultsAppender()
     {
         Command.CommandText = "CREATE TABLE managedAppenderIncompleteStackOnlyRow(a INTEGER, b INTEGER)";
@@ -1083,45 +1230,447 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
         reader.Read().Should().BeFalse();
     }
 
+    // https://github.com/Giorgi/DuckDB.NET/issues/355
+    // A row from CreateRow counts toward the chunk as soon as it is created, so an unfinished row
+    // was flushed on Dispose with its unwritten slots uninitialised. A VARCHAR slot holds a garbage
+    // string pointer, which crashes the process; a fixed-width slot is written as junk.
+
     [Fact]
-    public void IncompleteCreateRowIsDiscardedAndAppenderStaysUsable()
+    public void CreateRowWithFailedWriteIsNotWrittenOnDispose()
     {
-        Command.CommandText = "CREATE TABLE managedAppenderIncompleteCreatedRow(a INTEGER, b VARCHAR, m MAP(VARCHAR, INTEGER))";
+        Command.CommandText = "CREATE TABLE managedAppenderCreateRowFailedWrite(a VARCHAR, b INTEGER)";
         Command.ExecuteNonQuery();
 
-        using (var appender = Connection.CreateAppender("managedAppenderIncompleteCreatedRow"))
+        using (var appender = Connection.CreateAppender("managedAppenderCreateRowFailedWrite"))
         {
-            appender.CreateRow().AppendValue((int?)1).AppendValue("one").AppendValue(new Dictionary<string, int> { ["a"] = 1 }).EndRow();
+            appender.CreateRow().AppendValue("completed").AppendValue((int?)1).EndRow();
 
-            // A NULL in the abandoned row must not leak into the next row.
-            var incomplete = appender.CreateRow().AppendNullValue().AppendValue("two");
-            incomplete.Invoking(row => row.EndRow())
+            var row = appender.CreateRow();
+            row.Invoking(r => r.AppendValue(DateTime.UtcNow))
                 .Should().Throw<InvalidOperationException>()
-                .WithMessage("*specified only 2 values");
-
-            appender.CreateRow().AppendValue((int?)3).AppendValue("three").AppendValue(new Dictionary<string, int> { ["c"] = 3 }).EndRow();
-
-            incomplete.Invoking(row => row.AppendNullValue()).Should().Throw<IndexOutOfRangeException>();
-
-            appender.AppendRow(row => row.AppendValue((int?)4).AppendValue("four").AppendValue(new Dictionary<string, int> { ["d"] = 4 }));
-
-            // The last row is incomplete when the appender closes.
-            appender.CreateRow().AppendValue((int?)5);
+                .WithMessage("Cannot write DateTime to Varchar column");
         }
 
-        Command.CommandText = "SELECT a, b, cardinality(m) FROM managedAppenderIncompleteCreatedRow ORDER BY a";
-        using var reader = Command.ExecuteReader();
-        var rows = new List<(int, string, long)>();
-        while (reader.Read())
-        {
-            rows.Add((reader.GetInt32(0), reader.GetString(1), reader.GetInt64(2)));
-        }
-
-        rows.Should().Equal((1, "one", 1L), (3, "three", 1L), (4, "four", 1L));
+        VerifyOnlyCompletedRowWritten("managedAppenderCreateRowFailedWrite");
     }
 
     [Fact]
-    public void AppendRowFailureFlushesCompletedRowsAndFaultsAppender()
+    public void NumericValueForNonNumericColumnThrows()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderNumericToVarchar(a VARCHAR, b INTEGER)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderNumericToVarchar"))
+        {
+            appender.CreateRow().AppendValue("completed").AppendValue((int?)1).EndRow();
+
+            var row = appender.CreateRow();
+            row.Invoking(r => r.AppendValue((int?)5))
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("Cannot write Int32 to Varchar column");
+
+            row.Invoking(r => r.AppendValue((double?)5))
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("Cannot write Double to Varchar column");
+        }
+
+        VerifyOnlyCompletedRowWritten("managedAppenderNumericToVarchar");
+    }
+
+    [Fact]
+    public void CreateRowWithoutValuesIsNotWrittenOnDispose()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderCreateRowNoValues(a VARCHAR, b INTEGER)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderCreateRowNoValues"))
+        {
+            appender.CreateRow().AppendValue("completed").AppendValue((int?)1).EndRow();
+
+            appender.CreateRow();
+        }
+
+        VerifyOnlyCompletedRowWritten("managedAppenderCreateRowNoValues");
+    }
+
+    [Fact]
+    public void CreateRowWithMissingValuesIsNotWrittenOnDispose()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderCreateRowMissingValues(a VARCHAR, b INTEGER)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderCreateRowMissingValues"))
+        {
+            appender.CreateRow().AppendValue("completed").AppendValue((int?)1).EndRow();
+
+            appender.CreateRow().AppendValue("partial");
+        }
+
+        VerifyOnlyCompletedRowWritten("managedAppenderCreateRowMissingValues");
+    }
+
+    // A failed write leaves the column unwritten, so the caller can catch the error and finish the row.
+    [Fact]
+    public void CreateRowFinishedAfterFailedWriteIsWritten()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderCreateRowRetry(a VARCHAR, b INTEGER)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderCreateRowRetry"))
+        {
+            var row = appender.CreateRow();
+            row.Invoking(r => r.AppendValue(DateTime.UtcNow))
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("Cannot write DateTime to Varchar column");
+
+            row.AppendValue("completed").AppendValue((int?)1).EndRow();
+        }
+
+        VerifyOnlyCompletedRowWritten("managedAppenderCreateRowRetry");
+    }
+
+    // A collection that fails part way has already marked its earlier NULL items NULL, and retrying it
+    // writes the same items again, so the retried values must not read back as NULL.
+    [Theory]
+    [InlineData("INTEGER[2]")]
+    [InlineData("INTEGER[]")]
+    public void CollectionFinishedAfterFailedWriteHasNoNullItems(string columnType)
+    {
+        var table = columnType.EndsWith("[]") ? "managedAppenderListRetry" : "managedAppenderArrayRetry";
+        Command.CommandText = $"CREATE TABLE {table}(a {columnType}, b VARCHAR)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender(table))
+        {
+            var row = appender.CreateRow();
+            row.Invoking(r => r.AppendValue(new List<object> { null, "bad" })).Should().Throw<InvalidOperationException>();
+
+            row.AppendValue(new List<int> { 1, 2 }).AppendValue("retried").EndRow();
+        }
+
+        Command.CommandText = $"SELECT a, b FROM {table}";
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetFieldValue<List<int?>>(0).Should().Equal(1, 2);
+        reader.GetString(1).Should().Be("retried");
+        reader.Read().Should().BeFalse();
+    }
+
+    // Same as above one level down: a NULL inner list or array, whose array items are marked NULL too.
+    [Theory]
+    [InlineData("INTEGER[][]")]
+    [InlineData("INTEGER[2][2]")]
+    public void NestedCollectionFinishedAfterFailedWriteHasNoNullItems(string columnType)
+    {
+        var table = columnType == "INTEGER[][]" ? "managedAppenderNestedListRetry" : "managedAppenderNestedArrayRetry";
+        Command.CommandText = $"CREATE TABLE {table}(a {columnType}, b VARCHAR)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender(table))
+        {
+            var row = appender.CreateRow();
+            row.Invoking(r => r.AppendValue(new List<object> { null, "bad" })).Should().Throw<InvalidOperationException>();
+
+            row.AppendValue(new List<List<int>> { new() { 1, 2 }, new() { 3, 4 } }).AppendValue("retried").EndRow();
+        }
+
+        Command.CommandText = $"SELECT a, b FROM {table}";
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetFieldValue<List<List<int?>>>(0).Should().BeEquivalentTo(
+            new List<List<int?>> { new() { 1, 2 }, new() { 3, 4 } }, options => options.WithStrictOrdering());
+        reader.GetString(1).Should().Be("retried");
+        reader.Read().Should().BeFalse();
+    }
+
+    // A retry with more items than a list has room for grows the list's items. DuckDB keeps the NULLs the
+    // failed attempt marked, so the retried values must still clear them after the list has grown.
+    [Fact]
+    public void ListFinishedAfterFailedWriteHasNoNullItemsAfterListGrows()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderListRetryGrows(a INTEGER[], b VARCHAR)";
+        Command.ExecuteNonQuery();
+
+        var items = Enumerable.Range(1, 3000).ToList();
+
+        using (var appender = Connection.CreateAppender("managedAppenderListRetryGrows"))
+        {
+            var row = appender.CreateRow();
+            row.Invoking(r => r.AppendValue(new List<object> { null, "bad" })).Should().Throw<InvalidOperationException>();
+
+            row.AppendValue(items).AppendValue("retried").EndRow();
+        }
+
+        Command.CommandText = "SELECT a, b FROM managedAppenderListRetryGrows";
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetFieldValue<List<int?>>(0).Should().Equal(items.Select(item => (int?)item));
+        reader.GetString(1).Should().Be("retried");
+        reader.Read().Should().BeFalse();
+    }
+
+    // Same for a list of arrays: growing the list also refreshes the array writer and its item writer.
+    [Fact]
+    public void ListOfArraysFinishedAfterFailedWriteHasNoNullItemsAfterListGrows()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderListOfArraysRetryGrows(a INTEGER[2][], b VARCHAR)";
+        Command.ExecuteNonQuery();
+
+        var items = Enumerable.Range(1, 3000).Select(item => new List<int> { item, item }).ToList();
+
+        using (var appender = Connection.CreateAppender("managedAppenderListOfArraysRetryGrows"))
+        {
+            var row = appender.CreateRow();
+            row.Invoking(r => r.AppendValue(new List<object> { null, "bad" })).Should().Throw<InvalidOperationException>();
+
+            row.AppendValue(items).AppendValue("retried").EndRow();
+        }
+
+        Command.CommandText = "SELECT a, b FROM managedAppenderListOfArraysRetryGrows";
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetFieldValue<List<List<int?>>>(0).Should().BeEquivalentTo(
+            items.Select(item => item.Select(value => (int?)value).ToList()), options => options.WithStrictOrdering());
+        reader.GetString(1).Should().Be("retried");
+        reader.Read().Should().BeFalse();
+    }
+
+    // A caller that catches a failed write and moves on without finishing the row leaves it incomplete.
+    // Creating the next row discards it and faults the appender, so the skipped row never reaches the
+    // table, even with only fixed-width columns where it would not crash.
+    [Fact]
+    public void CreateRowAfterIncompleteRowFaultsAppender()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderSkippedRow(a INTEGER, b INTEGER)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderSkippedRow"))
+        {
+            appender.CreateRow().AppendValue((int?)1).AppendValue((int?)10).EndRow();
+
+            var row = appender.CreateRow().AppendValue((int?)2);
+            row.Invoking(r => r.AppendValue("bad")).Should().Throw<InvalidOperationException>();
+
+            appender.Invoking(a => a.CreateRow()).Should().Throw<InvalidOperationException>()
+                .WithMessage("The previous row has only 1 of 2 values*");
+
+            appender.Invoking(a => a.CreateRow()).Should().Throw<InvalidOperationException>()
+                .WithMessage("*cannot be reused*");
+        }
+
+        ReadIntegerPairs("managedAppenderSkippedRow").Should().Equal((1, 10));
+    }
+
+    [Fact]
+    public void AppendRowAfterIncompleteRowFaultsAppender()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderAppendRowAfterIncomplete(a VARCHAR, b INTEGER)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderAppendRowAfterIncomplete"))
+        {
+            appender.CreateRow().AppendValue("completed").AppendValue((int?)1).EndRow();
+
+            appender.CreateRow().AppendValue("discarded");
+
+            appender.Invoking(a => a.AppendRow(row => row.AppendValue("after").AppendValue((int?)2)))
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("The previous row has only 1 of 2 values*");
+        }
+
+        VerifyOnlyCompletedRowWritten("managedAppenderAppendRowAfterIncomplete");
+    }
+
+    [Fact]
+    public void DiscardedRowCannotBeWrittenTo()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderDiscardedRowReference(a VARCHAR, b INTEGER)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderDiscardedRowReference"))
+        {
+            appender.CreateRow().AppendValue("completed").AppendValue((int?)1).EndRow();
+
+            var discarded = appender.CreateRow().AppendValue("discarded");
+
+            appender.Invoking(a => a.CreateRow()).Should().Throw<InvalidOperationException>();
+
+            discarded.Invoking(r => r.AppendValue((int?)2)).Should().Throw<IndexOutOfRangeException>();
+        }
+
+        VerifyOnlyCompletedRowWritten("managedAppenderDiscardedRowReference");
+    }
+
+    // Clear drops every row that has not been written yet, so an incomplete row is simply gone and the
+    // appender stays usable.
+    [Fact]
+    public void ClearDiscardsIncompleteRowWithoutFault()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderClearIncomplete(a VARCHAR, b INTEGER)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderClearIncomplete"))
+        {
+            appender.CreateRow().AppendValue("discarded");
+
+            appender.Clear();
+
+            appender.CreateRow().AppendValue("completed").AppendValue((int?)1).EndRow();
+        }
+
+        VerifyOnlyCompletedRowWritten("managedAppenderClearIncomplete");
+    }
+
+    // The incomplete row is dropped on Dispose even when it sits in the last slot of a full chunk.
+    [Fact]
+    public void IncompleteRowInLastSlotOfChunkIsNotWritten()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderIncompleteLastSlot(a INTEGER, b VARCHAR)";
+        Command.ExecuteNonQuery();
+
+        var chunkSize = checked((int)DuckDBGlobalData.VectorSize);
+
+        using (var appender = Connection.CreateAppender("managedAppenderIncompleteLastSlot"))
+        {
+            for (var index = 0; index < chunkSize - 1; index++)
+            {
+                appender.CreateRow().AppendValue((int?)index).AppendValue(index.ToString()).EndRow();
+            }
+
+            appender.CreateRow().AppendValue((int?)-1);
+        }
+
+        Command.CommandText = "SELECT a, b FROM managedAppenderIncompleteLastSlot ORDER BY rowid";
+        using var reader = Command.ExecuteReader();
+
+        for (var index = 0; index < chunkSize - 1; index++)
+        {
+            reader.Read().Should().BeTrue();
+            reader.GetInt32(0).Should().Be(index);
+            reader.GetString(1).Should().Be(index.ToString());
+        }
+
+        reader.Read().Should().BeFalse();
+    }
+
+    // The next row must check the incomplete row before taking a slot: with the incomplete row in the last
+    // slot, taking a slot first would see a full chunk and flush it, incomplete row included.
+    [Fact]
+    public void CreateRowAfterIncompleteRowInLastSlotOfChunkDoesNotFlushIt()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderIncompleteLastSlotNextRow(a INTEGER, b VARCHAR)";
+        Command.ExecuteNonQuery();
+
+        var chunkSize = checked((int)DuckDBGlobalData.VectorSize);
+
+        using (var appender = Connection.CreateAppender("managedAppenderIncompleteLastSlotNextRow"))
+        {
+            for (var index = 0; index < chunkSize - 1; index++)
+            {
+                appender.CreateRow().AppendValue((int?)index).AppendValue(index.ToString()).EndRow();
+            }
+
+            appender.CreateRow().AppendValue((int?)-1);
+
+            appender.Invoking(a => a.CreateRow()).Should().Throw<InvalidOperationException>()
+                .WithMessage("The previous row has only 1 of 2 values*");
+        }
+
+        Command.CommandText = "SELECT count(*), count(*) FILTER (WHERE a = -1) FROM managedAppenderIncompleteLastSlotNextRow";
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetInt64(0).Should().Be(chunkSize - 1);
+        reader.GetInt64(1).Should().Be(0);
+    }
+
+    // The incomplete row wrote part of a list before failing, which leaves unused items in the list's
+    // child vector; DuckDB only reads the items that the written rows point to.
+    [Fact]
+    public void IncompleteRowWithPartialListIsNotWrittenOnDispose()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderIncompleteList(a INTEGER[], b VARCHAR)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderIncompleteList"))
+        {
+            appender.CreateRow().AppendValue(new List<int> { 1 }).AppendValue("completed").EndRow();
+
+            var row = appender.CreateRow();
+            row.Invoking(r => r.AppendValue(new List<object> { 5, "bad" })).Should().Throw<InvalidOperationException>();
+        }
+
+        Command.CommandText = "SELECT a, b FROM managedAppenderIncompleteList";
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetFieldValue<List<int>>(0).Should().Equal(1);
+        reader.GetString(1).Should().Be("completed");
+        reader.Read().Should().BeFalse();
+    }
+
+    [Fact]
+    public void IncompleteRowWithPartialArrayIsNotWrittenOnDispose()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderIncompleteArray(a INTEGER[2], b VARCHAR)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderIncompleteArray"))
+        {
+            appender.CreateRow().AppendValue(new List<int> { 1, 2 }).AppendValue("completed").EndRow();
+
+            var row = appender.CreateRow();
+            row.Invoking(r => r.AppendValue(new List<object> { null, "bad" })).Should().Throw<InvalidOperationException>();
+        }
+
+        Command.CommandText = "SELECT a, b FROM managedAppenderIncompleteArray";
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetFieldValue<List<int>>(0).Should().Equal(1, 2);
+        reader.GetString(1).Should().Be("completed");
+        reader.Read().Should().BeFalse();
+    }
+
+    // EndRow only checks the row, so a row with every value is written even without it.
+    [Fact]
+    public void CompleteRowWithoutEndRowIsWritten()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderWithoutEndRow(a INTEGER, b INTEGER)";
+        Command.ExecuteNonQuery();
+
+        using (var appender = Connection.CreateAppender("managedAppenderWithoutEndRow"))
+        {
+            appender.CreateRow().AppendValue((int?)1).AppendValue((int?)10);
+            appender.CreateRow().AppendValue((int?)2).AppendValue((int?)20);
+        }
+
+        ReadIntegerPairs("managedAppenderWithoutEndRow").Should().Equal((1, 10), (2, 20));
+    }
+
+    private List<(int, int)> ReadIntegerPairs(string table)
+    {
+        Command.CommandText = $"SELECT a, b FROM {table} ORDER BY rowid";
+        using var reader = Command.ExecuteReader();
+
+        var rows = new List<(int, int)>();
+        while (reader.Read())
+        {
+            rows.Add((reader.GetInt32(0), reader.GetInt32(1)));
+        }
+
+        return rows;
+    }
+
+    private void VerifyOnlyCompletedRowWritten(string table)
+    {
+        Command.CommandText = $"SELECT a, b FROM {table} ORDER BY rowid";
+        using var reader = Command.ExecuteReader();
+        reader.Read().Should().BeTrue();
+        reader.GetString(0).Should().Be("completed");
+        reader.GetInt32(1).Should().Be(1);
+        reader.Read().Should().BeFalse();
+    }
+
+    [Fact]
+    public void AppendRowFailureDiscardsFailedRowAndCommitsCompletedRowsOnClose()
     {
         Command.CommandText = "CREATE TABLE managedAppenderThrownScopedRow(a INTEGER, b INTEGER[])";
         Command.ExecuteNonQuery();
@@ -1156,9 +1705,9 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
                 .Should().Throw<InvalidOperationException>()
                 .WithMessage("*cannot be reused*");
 
-            appender.Invoking(value => value.Close())
-                .Should().Throw<InvalidOperationException>()
-                .WithMessage("*cannot be reused*");
+            // Close is still allowed on a faulted appender: it commits the rows completed before
+            // the failure (the failed row was discarded).
+            appender.Invoking(value => value.Close()).Should().NotThrow();
         }
 
         Command.CommandText = "SELECT a, b FROM managedAppenderThrownScopedRow ORDER BY a";
@@ -1170,7 +1719,7 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
     }
 
     [Fact]
-    public void AppendRowFailureAggregatesFinalizationFailureAndCanBeDisposed()
+    public void AppendRowFailureSurfacesCompletedRowCommitErrorAtClose()
     {
         Command.CommandText = "CREATE TABLE managedAppenderFailedFinalization(a INTEGER UNIQUE)";
         Command.ExecuteNonQuery();
@@ -1178,22 +1727,27 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
         Command.ExecuteNonQuery();
 
         using var appender = Connection.CreateAppender("managedAppenderFailedFinalization");
+
+        // This completed row duplicates the existing key; it stays buffered (uncommitted).
         appender.AppendRow(row => row.AppendValue((int?)1));
 
-        var exception = appender.Invoking(value => value.AppendRow(row =>
+        // The failing row is dropped and the appender faults. The callback exception propagates
+        // on its own - the failure itself does not commit anything.
+        appender.Invoking(value => value.AppendRow(row =>
             {
                 row.AppendValue((int?)2);
                 throw new InvalidOperationException("callback failed");
             }))
-            .Should().Throw<AggregateException>().Which;
+            .Should().Throw<InvalidOperationException>()
+            .WithMessage("callback failed");
 
-        exception.InnerExceptions.Should().HaveCount(2);
-        exception.InnerExceptions[0].Should().BeOfType<InvalidOperationException>()
-            .Which.Message.Should().Be("callback failed");
-        exception.InnerExceptions[1].Should().BeOfType<DuckDBException>()
+        // Committing the completed row happens at Close, and that is where the constraint
+        // violation surfaces.
+        appender.Invoking(value => value.Close())
+            .Should().Throw<DuckDBException>()
             .Which.ErrorType.Should().Be(DuckDBErrorType.Constraint);
 
-        appender.Invoking(value => value.Dispose()).Should().NotThrow();
+        // Close already tore the appender down, so the using-block dispose is a no-op.
         appender.Invoking(value => value.Dispose()).Should().NotThrow();
 
         Command.CommandText = "SELECT count(*) FROM managedAppenderFailedFinalization";
@@ -1322,7 +1876,7 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
         {
             for (int i = 0; i < 10_000; i++)
             {
-                appender.CreateRow().AppendValue((int?)2).AppendValue(2).AppendDefault().EndRow();
+                appender.CreateRow().AppendValue((int?)2).AppendValue((int?)2).AppendDefault().EndRow();
             }
 
             appender.Clear();
@@ -1344,14 +1898,14 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
         {
             for (int i = 0; i < 10_000; i++)
             {
-                appender.CreateRow().AppendValue((int?)2).AppendValue(2).AppendDefault().EndRow();
+                appender.CreateRow().AppendValue((int?)2).AppendValue((int?)2).AppendDefault().EndRow();
             }
 
             appender.Clear();
 
             for (int i = 0; i < 5_000; i++)
             {
-                appender.CreateRow().AppendValue((int?)3).AppendValue(3).AppendDefault().EndRow();
+                appender.CreateRow().AppendValue((int?)3).AppendValue((int?)3).AppendDefault().EndRow();
             }
         }
 
@@ -1454,5 +2008,39 @@ public class DuckDBManagedAppenderTests(DuckDBDatabaseFixture db) : DuckDBTestBa
     private enum EnumNotValidValueTestEnum
     {
         NotValid = 12345,
+    }
+
+    // Each date or timestamp used to allocate several hundred bytes, because the infinity checks compared structs
+    // through ValueType.Equals.
+    [Fact]
+    public void AppendingDatesAndTimestampsDoesNotAllocatePerValue()
+    {
+        Command.CommandText = "CREATE TABLE managedAppenderDateAllocations(a TIMESTAMP, b DATE, c DATE, d TIMESTAMPTZ)";
+        Command.ExecuteNonQuery();
+
+        const int rows = 20_000;
+        var dateTime = new DateTime(2024, 1, 15, 12, 30, 45);
+        var state = (DateTime: (DateTime?)dateTime, DateOnly: (DateOnly?)DateOnly.FromDateTime(dateTime), Offset: (DateTimeOffset?)new DateTimeOffset(dateTime, TimeSpan.Zero));
+
+        using var appender = Connection.CreateAppender("managedAppenderDateAllocations");
+
+        long Append()
+        {
+            var before = GC.GetAllocatedBytesForCurrentThread();
+
+            for (var i = 0; i < rows; i++)
+            {
+                appender.AppendRow(state, static (row, value) => row.AppendValue(value.DateTime).AppendValue(value.DateTime).AppendValue(value.DateOnly).AppendValue(value.Offset));
+            }
+
+            return GC.GetAllocatedBytesForCurrentThread() - before;
+        }
+
+        // The first pass pays for one-time allocations such as the cached delegate.
+        Append();
+
+        // Before the fix this was about 2,400 bytes per row. A Release build allocates nothing; a Debug build
+        // boxes each value once in WriteValue, about 100 bytes per row here, so the limit leaves room for that.
+        Append().Should().BeLessThan(rows * 500);
     }
 }

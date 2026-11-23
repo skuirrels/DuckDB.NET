@@ -2,8 +2,15 @@
 
 internal sealed class BooleanVectorDataReader : VectorDataReaderBase
 {
+    private static readonly object True = true;
+    private static readonly object False = false;
+
     internal unsafe BooleanVectorDataReader(void* dataPointer, ulong* validityMaskPointer, DuckDBType columnType, string columnName) : base(dataPointer, validityMaskPointer, columnType, columnName)
     {
+        if (columnType == DuckDBType.Boolean)
+        {
+            StorageType = typeof(bool);
+        }
     }
 
     protected override T GetValidValue<T>(ulong offset)
@@ -17,13 +24,14 @@ internal sealed class BooleanVectorDataReader : VectorDataReaderBase
         return (T)(object)value; //JIT will optimize the casts at least for not nullable T
     }
 
-    internal override object GetValue(ulong offset, Type targetType)
+    internal override object GetValueCore(ulong offset, Type targetType)
     {
         if (DuckDBType != DuckDBType.Boolean)
         {
-            return base.GetValue(offset, targetType);
+            return base.GetValueCore(offset, targetType);
         }
 
-        return GetFieldData<bool>(offset);
+        // A boolean has two values, so the two boxes are made once and shared.
+        return GetFieldData<bool>(offset) ? True : False;
     }
 }

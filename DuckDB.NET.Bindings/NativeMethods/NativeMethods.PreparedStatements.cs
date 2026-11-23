@@ -22,6 +22,11 @@ public partial class NativeMethods
         public static partial string DuckDBPrepareError(DuckDBPreparedStatement preparedStatement);
 
         [SuppressGCTransition]
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_prepared_statement_type")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial DuckDBStatementType DuckDBPreparedStatementType(DuckDBPreparedStatement preparedStatement);
+
+        [SuppressGCTransition]
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_nparams")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial long DuckDBParams(DuckDBPreparedStatement preparedStatement);
@@ -30,6 +35,11 @@ public partial class NativeMethods
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_value")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBState DuckDBBindValue(DuckDBPreparedStatement preparedStatement, long index, DuckDBValue val);
+
+        // Maybe [SuppressGCTransition]: clears the map of bound values, freeing each value
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_clear_bindings")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial DuckDBState DuckDBClearBindings(DuckDBPreparedStatement preparedStatement);
 
         // Maybe [SuppressGCTransition]: linear search + std::string construction (small allocation)
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_parameter_index", StringMarshalling = StringMarshalling.Utf8)]
@@ -61,10 +71,6 @@ public partial class NativeMethods
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_hugeint")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBState DuckDBBindHugeInt(DuckDBPreparedStatement preparedStatement, long index, DuckDBHugeInt val);
-
-        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_decimal")]
-        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-        public static partial DuckDBState DuckDBBindDecimal(DuckDBPreparedStatement preparedStatement, long index, DuckDBDecimal val);
 
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_uint8")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -102,14 +108,6 @@ public partial class NativeMethods
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBState DuckDBBindTimestamp(DuckDBPreparedStatement preparedStatement, long index, DuckDBTimestampStruct val);
 
-        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_timestamp_tz")]
-        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-        public static partial DuckDBState DuckDBBindTimestampTz(DuckDBPreparedStatement preparedStatement, long index, DuckDBTimestampStruct val);
-
-        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_interval")]
-        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-        public static partial DuckDBState DuckDBBindInterval(DuckDBPreparedStatement preparedStatement, long index, DuckDBInterval val);
-
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_varchar", StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBState DuckDBBindVarchar(DuckDBPreparedStatement preparedStatement, long index, string val);
@@ -121,12 +119,6 @@ public partial class NativeMethods
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_null")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBState DuckDBBindNull(DuckDBPreparedStatement preparedStatement, long index);
-
-        // Clears values from a reusable prepared statement before rebinding it. This prevents a
-        // parameter omitted by a later named collection from retaining its previous value.
-        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_clear_bindings")]
-        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-        public static partial DuckDBState DuckDBClearBindings(DuckDBPreparedStatement preparedStatement);
 
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_execute_prepared")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -140,5 +132,18 @@ public partial class NativeMethods
         [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_param_logical_type")]
         [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
         public static partial DuckDBLogicalType DuckDBParamLogicalType(DuckDBPreparedStatement preparedStatement, long index);
+
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_decimal")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial DuckDBState DuckDBBindDecimal(DuckDBPreparedStatement preparedStatement, long index, DuckDBDecimal val);
+
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_interval")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial DuckDBState DuckDBBindInterval(DuckDBPreparedStatement preparedStatement, long index, DuckDBInterval val);
+
+        [LibraryImport(DuckDbLibrary, EntryPoint = "duckdb_bind_timestamp_tz")]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        public static partial DuckDBState DuckDBBindTimestampTz(DuckDBPreparedStatement preparedStatement, long index, DuckDBTimestampStruct val);
+
     }
 }

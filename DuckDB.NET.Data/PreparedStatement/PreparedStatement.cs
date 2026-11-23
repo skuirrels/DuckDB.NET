@@ -2,156 +2,164 @@ using DuckDB.NET.Data.Connection;
 
 namespace DuckDB.NET.Data.PreparedStatement;
 
-internal class PreparedStatement : IDisposable
+internal sealed class PreparedStatement : IDisposable
 {
-    protected readonly DuckDBPreparedStatement Statement;
+    private readonly DuckDBPreparedStatement statement;
 
-    internal PreparedStatement(DuckDBPreparedStatement statement)
+    private PreparedStatement(DuckDBPreparedStatement statement)
     {
-        Statement = statement;
+        this.statement = statement;
     }
 
-    protected virtual bool RequiresClearBindings => false;
-
-    protected virtual long ParameterCount => NativeMethods.PreparedStatements.DuckDBParams(Statement);
-
-    public static IEnumerable<DuckDBResult> PrepareMultiple(DuckDBNativeConnection connection, string query, DuckDBParameterCollection parameters, bool useStreamingMode)
+    public static IEnumerable<StatementResult> PrepareMultiple(DuckDBNativeConnection connection, string query, DuckDBParameterCollection parameters, bool useStreamingMode)
     {
         var statementCount = NativeMethods.ExtractStatements.DuckDBExtractStatements(connection, query, out var extractedStatements);
 
         using (extractedStatements)
         {
-            if (statementCount <= 0)
+            if (statementCount == 0)
             {
                 var error = NativeMethods.ExtractStatements.DuckDBExtractStatementsError(extractedStatements);
                 throw new DuckDBException(error);
             }
 
-            for (int index = 0; index < statementCount; index++)
+            for (ulong index = 0; index < statementCount; index++)
             {
-                var status = NativeMethods.ExtractStatements.DuckDBPrepareExtractedStatement(connection, extractedStatements, index, out var statement);
+                var status = NativeMethods.ExtractStatements.DuckDBPrepareExtractedStatement(connection, extractedStatements, (long)index, out var statement);
 
                 if (status.IsSuccess())
                 {
                     using var preparedStatement = new PreparedStatement(statement);
-                    yield return preparedStatement.Execute(parameters, useStreamingMode, connection);
+                    var statementType = NativeMethods.PreparedStatements.DuckDBPreparedStatementType(statement);
+                    yield return new StatementResult(preparedStatement.Execute(parameters, useStreamingMode, connection), statementType);
                 }
                 else
                 {
-                    var errorMessage = NativeMethods.PreparedStatements.DuckDBPrepareError(statement);
-                    statement.Dispose();
-
-                    if (string.IsNullOrEmpty(errorMessage))
-                    {
-                        errorMessage = "DuckDBQuery failed";
-                    }
-
-                    throw new DuckDBException(errorMessage, UdfExceptionStore.Retrieve(connection));
+                    throw PrepareFailed(statement, connection);
                 }
             }
         }
     }
 
-    public static ReusablePreparedStatement? TryPrepareReusable(DuckDBNativeConnection connection, string query)
+    /// <summary>
+    /// Prepares a command that holds exactly one statement, to be executed many times. A command of several statements
+    /// returns null: a later statement can depend on an earlier one having run, so each is prepared just before it runs.
+    /// </summary>
+    public static PreparedStatementEntry? PrepareSingle(DuckDBNativeConnection connection, string query)
     {
         var statementCount = NativeMethods.ExtractStatements.DuckDBExtractStatements(connection, query, out var extractedStatements);
 
         using (extractedStatements)
         {
-            if (statementCount <= 0)
+            if (statementCount == 0)
             {
                 var error = NativeMethods.ExtractStatements.DuckDBExtractStatementsError(extractedStatements);
-                throw new DuckDBException(error);
+                throw new DuckDBException(string.IsNullOrEmpty(error) ? "The command text holds no statement to prepare" : error);
             }
 
-            // DuckDB can expand one logical command into dependent statements. Dynamic PIVOT,
-            // IMPORT and some PRAGMAs require earlier statements to execute before later ones can
-            // be prepared. Keep those commands on the existing per-execution path.
             if (statementCount != 1)
             {
                 return null;
             }
 
             var status = NativeMethods.ExtractStatements.DuckDBPrepareExtractedStatement(connection, extractedStatements, 0, out var statement);
-            if (status.IsSuccess())
+
+            if (!status.IsSuccess())
             {
-                return new ReusablePreparedStatement(statement);
+                using (statement)
+                {
+                    throw PrepareFailed(statement, connection);
+                }
             }
 
-            var errorMessage = NativeMethods.PreparedStatements.DuckDBPrepareError(statement);
-            statement.Dispose();
-
-            if (string.IsNullOrEmpty(errorMessage))
+            try
             {
-                errorMessage = "DuckDBQuery failed";
+                return new PreparedStatementEntry(statement);
             }
-
-            throw new DuckDBException(errorMessage, UdfExceptionStore.Retrieve(connection));
+            catch
+            {
+                statement.Dispose();
+                throw;
+            }
         }
     }
 
-    internal DuckDBResult Execute(DuckDBParameterCollection parameterCollection, bool useStreamingMode, DuckDBNativeConnection connection)
+    private static DuckDBException PrepareFailed(DuckDBPreparedStatement statement, DuckDBNativeConnection connection)
     {
-        if (RequiresClearBindings)
+        var errorMessage = NativeMethods.PreparedStatements.DuckDBPrepareError(statement);
+
+        if (string.IsNullOrEmpty(errorMessage))
         {
-            var clearState = NativeMethods.PreparedStatements.DuckDBClearBindings(Statement);
-            if (!clearState.IsSuccess())
-            {
-                var errorMessage = NativeMethods.PreparedStatements.DuckDBPrepareError(Statement);
-                throw new InvalidOperationException($"Unable to clear prepared statement bindings: {errorMessage}");
-            }
+            errorMessage = "DuckDBQuery failed";
         }
 
-        BindParameters(parameterCollection);
+        return new DuckDBException(errorMessage, UdfExceptionStore.Retrieve(connection));
+    }
 
+    private DuckDBResult Execute(DuckDBParameterCollection parameterCollection, bool useStreamingMode, DuckDBNativeConnection connection)
+    {
+        BindParameters(statement, parameterCollection, null);
+
+        return Execute(statement, useStreamingMode, connection);
+    }
+
+    internal static DuckDBResult Execute(DuckDBPreparedStatement statement, bool useStreamingMode, DuckDBNativeConnection connection)
+    {
         var status = useStreamingMode
-            ? NativeMethods.PreparedStatements.DuckDBExecutePreparedStreaming(Statement, out var queryResult)
-            : NativeMethods.PreparedStatements.DuckDBExecutePrepared(Statement, out queryResult);
+            ? NativeMethods.PreparedStatements.DuckDBExecutePreparedStreaming(statement, out var queryResult)
+            : NativeMethods.PreparedStatements.DuckDBExecutePrepared(statement, out queryResult);
 
         if (!status.IsSuccess())
         {
-            var errorMessage = NativeMethods.Query.DuckDBResultError(ref queryResult);
-            var errorType = NativeMethods.Query.DuckDBResultErrorType(ref queryResult);
-            queryResult.Close();
-
-            if (string.IsNullOrEmpty(errorMessage))
+            try
             {
-                errorMessage = "DuckDB execution failed";
+                queryResult.ThrowOnError(connection, "DuckDB execution failed");
             }
-
-            if (errorType == DuckDBErrorType.Interrupt)
+            finally
             {
-                throw new OperationCanceledException();
+                queryResult.Close();
             }
-
-            var innerException = UdfExceptionStore.Retrieve(connection);
-            throw innerException != null
-                ? new DuckDBException(errorMessage, innerException)
-                : new DuckDBException(errorMessage, errorType);
         }
 
         return queryResult;
     }
 
-    protected virtual void BindParameters(DuckDBParameterCollection parameterCollection)
+    /// <summary>
+    /// Binds the parameters of the collection to the statement. With an entry, the parameter count, the type of each
+    /// parameter and the index of each name come from what the entry read when it was prepared; without one, they
+    /// are asked of DuckDB.
+    /// </summary>
+    internal static void BindParameters(DuckDBPreparedStatement preparedStatement, DuckDBParameterCollection parameterCollection, PreparedStatementEntry? entry)
     {
-        var expectedParameters = ValidateParameterCount(parameterCollection);
+        var expectedParameters = entry?.ParameterCount ?? NativeMethods.PreparedStatements.DuckDBParams(preparedStatement);
+        if (parameterCollection.Count < expectedParameters)
+        {
+            throw new InvalidOperationException($"Invalid number of parameters. Expected {expectedParameters}, got {parameterCollection.Count}");
+        }
 
         // Index-based iteration over the typed collection avoids the per-execution allocations of
         // OfType<>().Any(...) and of the boxed List enumerator that `foreach (DuckDBParameter ...)`
         // over the non-generic collection would produce. BindParameters runs on every execution.
         var count = parameterCollection.Count;
 
-        var hasNamedParameters = HasNamedParameters(parameterCollection);
+        var hasNamedParameters = false;
+        for (var i = 0; i < count; i++)
+        {
+            if (!string.IsNullOrEmpty(parameterCollection[i].ParameterName))
+            {
+                hasNamedParameters = true;
+                break;
+            }
+        }
 
         if (hasNamedParameters)
         {
             for (var i = 0; i < count; i++)
             {
                 var param = parameterCollection[i];
-                if (TryGetParameterIndex(param.ParameterName, out var index))
+                if (TryGetParameterIndex(preparedStatement, param.ParameterName, entry, out var index))
                 {
-                    BindParameter(index, param);
+                    BindParameter(preparedStatement, index, param, entry);
                 }
             }
         }
@@ -160,226 +168,51 @@ internal class PreparedStatement : IDisposable
             for (var i = 0; i < expectedParameters; ++i)
             {
                 var param = parameterCollection[i];
-                BindParameter(i + 1, param);
+                BindParameter(preparedStatement, i + 1, param, entry);
             }
         }
     }
 
-    protected virtual bool TryGetParameterIndex(string parameterName, out long index)
+    private static bool TryGetParameterIndex(DuckDBPreparedStatement preparedStatement, string name, PreparedStatementEntry? entry, out long index)
     {
-        if (string.IsNullOrEmpty(parameterName))
+        if (entry is not null)
         {
-            index = 0;
-            return false;
+            return entry.TryGetParameterIndex(name, out index);
         }
 
-        var state = NativeMethods.PreparedStatements.DuckDBBindParameterIndex(Statement, out var nativeIndex, parameterName);
-        index = state.IsSuccess() ? nativeIndex : 0;
-
-        return index > 0;
+        var found = NativeMethods.PreparedStatements.DuckDBBindParameterIndex(preparedStatement, out var nativeIndex, name).IsSuccess();
+        index = nativeIndex;
+        return found;
     }
 
-    protected virtual void BindParameter(long index, DuckDBParameter parameter)
+    private static void BindParameter(DuckDBPreparedStatement preparedStatement, long index, DuckDBParameter parameter, PreparedStatementEntry? entry)
     {
-        using var parameterLogicalType = NativeMethods.PreparedStatements.DuckDBParamLogicalType(Statement, index);
-        BindParameter(index, parameter, parameterLogicalType);
-    }
-
-    protected void BindParameter(long index, DuckDBParameter parameter, DuckDBLogicalType parameterLogicalType)
-    {
-        var duckDBType = NativeMethods.LogicalType.DuckDBGetTypeId(parameterLogicalType);
-
-        DuckDBState result;
-        if (!parameter.TryBindScalarValue(Statement, index, duckDBType, out result))
+        if (entry is not null)
         {
-            using var duckDBValue = parameter.ToDuckDBValue(parameterLogicalType, duckDBType);
-            result = NativeMethods.PreparedStatements.DuckDBBindValue(Statement, index, duckDBValue);
+            var (logicalType, duckDBType) = entry.GetParameterType(index);
+            BindValue(preparedStatement, index, parameter, logicalType, duckDBType);
+            return;
         }
+
+        using var parameterLogicalType = NativeMethods.PreparedStatements.DuckDBParamLogicalType(preparedStatement, index);
+        BindValue(preparedStatement, index, parameter, parameterLogicalType, NativeMethods.LogicalType.DuckDBGetTypeId(parameterLogicalType));
+    }
+
+    private static void BindValue(DuckDBPreparedStatement preparedStatement, long index, DuckDBParameter parameter, DuckDBLogicalType logicalType, DuckDBType duckDBType)
+    {
+        using var duckDBValue = parameter.Value.ToDuckDBValue(logicalType, duckDBType, parameter.DbType);
+
+        var result = NativeMethods.PreparedStatements.DuckDBBindValue(preparedStatement, index, duckDBValue);
 
         if (!result.IsSuccess())
         {
-            var errorMessage = NativeMethods.PreparedStatements.DuckDBPrepareError(Statement);
+            var errorMessage = NativeMethods.PreparedStatements.DuckDBPrepareError(preparedStatement);
             throw new InvalidOperationException($"Unable to bind parameter {index}: {errorMessage}");
         }
     }
 
-    protected long ValidateParameterCount(DuckDBParameterCollection parameterCollection)
+    public void Dispose()
     {
-        var expectedParameters = ParameterCount;
-        if (parameterCollection.Count < expectedParameters)
-        {
-            throw new InvalidOperationException(
-                $"Invalid number of parameters. Expected {expectedParameters}, got {parameterCollection.Count}");
-        }
-
-        return expectedParameters;
+        statement.Dispose();
     }
-
-    protected static bool HasNamedParameters(DuckDBParameterCollection parameterCollection)
-    {
-        for (var index = 0; index < parameterCollection.Count; index++)
-        {
-            if (!string.IsNullOrEmpty(parameterCollection[index].ParameterName))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    public virtual void Dispose()
-    {
-        Statement.Dispose();
-    }
-}
-
-internal sealed class ReusablePreparedStatement : PreparedStatement
-{
-    private readonly long cachedParameterCount;
-    private readonly DuckDBLogicalType[] cachedParameterTypes;
-    private readonly Dictionary<string, long> cachedParameterIndices = new(StringComparer.Ordinal);
-    private DuckDBParameterCollection? cachedParameterCollection;
-    private int cachedParameterCollectionVersion = -1;
-    private int[]? cachedParameterMetadataVersions;
-    private ParameterBinding[]? cachedBindingPlan;
-
-    public ReusablePreparedStatement(DuckDBPreparedStatement statement)
-        : base(statement)
-    {
-        cachedParameterCount = NativeMethods.PreparedStatements.DuckDBParams(statement);
-        cachedParameterTypes = new DuckDBLogicalType[cachedParameterCount];
-
-        try
-        {
-            for (var index = 0; index < cachedParameterTypes.Length; index++)
-            {
-                cachedParameterTypes[index] = NativeMethods.PreparedStatements.DuckDBParamLogicalType(statement, index + 1);
-            }
-        }
-        catch
-        {
-            Dispose();
-            throw;
-        }
-    }
-
-    protected override bool RequiresClearBindings => true;
-
-    protected override long ParameterCount => cachedParameterCount;
-
-    protected override bool TryGetParameterIndex(string parameterName, out long index)
-    {
-        if (cachedParameterIndices.TryGetValue(parameterName, out index))
-        {
-            return index > 0;
-        }
-
-        var found = base.TryGetParameterIndex(parameterName, out index);
-        cachedParameterIndices.Add(parameterName, index);
-
-        return found;
-    }
-
-    protected override void BindParameters(DuckDBParameterCollection parameterCollection)
-    {
-        var bindingPlan = GetOrCreateBindingPlan(parameterCollection);
-
-        for (var index = 0; index < bindingPlan.Length; index++)
-        {
-            var binding = bindingPlan[index];
-            BindParameter(binding.Index, binding.Parameter);
-        }
-    }
-
-    protected override void BindParameter(long index, DuckDBParameter parameter)
-    {
-        BindParameter(index, parameter, cachedParameterTypes[index - 1]);
-    }
-
-    private ParameterBinding[] GetOrCreateBindingPlan(DuckDBParameterCollection parameterCollection)
-    {
-        if (IsBindingPlanCurrent(parameterCollection))
-        {
-            return cachedBindingPlan!;
-        }
-
-        var expectedParameters = ValidateParameterCount(parameterCollection);
-        var hasNamedParameters = HasNamedParameters(parameterCollection);
-        var plan = new ParameterBinding[hasNamedParameters
-            ? parameterCollection.Count
-            : checked((int)expectedParameters)];
-        var bindingCount = 0;
-
-        if (hasNamedParameters)
-        {
-            for (var parameterIndex = 0; parameterIndex < parameterCollection.Count; parameterIndex++)
-            {
-                var parameter = parameterCollection[parameterIndex];
-                if (TryGetParameterIndex(parameter.ParameterName, out var nativeIndex))
-                {
-                    plan[bindingCount++] = new ParameterBinding(nativeIndex, parameter);
-                }
-            }
-
-            if (bindingCount != plan.Length)
-            {
-                Array.Resize(ref plan, bindingCount);
-            }
-        }
-        else
-        {
-            for (var parameterIndex = 0; parameterIndex < expectedParameters; parameterIndex++)
-            {
-                plan[bindingCount++] = new ParameterBinding(
-                    parameterIndex + 1,
-                    parameterCollection[parameterIndex]);
-            }
-        }
-
-        cachedParameterCollection = parameterCollection;
-        cachedParameterCollectionVersion = parameterCollection.Version;
-        cachedParameterMetadataVersions = new int[parameterCollection.Count];
-        for (var index = 0; index < cachedParameterMetadataVersions.Length; index++)
-        {
-            cachedParameterMetadataVersions[index] = parameterCollection[index].BindingMetadataVersion;
-        }
-
-        cachedBindingPlan = plan;
-        return plan;
-    }
-
-    private bool IsBindingPlanCurrent(DuckDBParameterCollection parameterCollection)
-    {
-        if (!ReferenceEquals(cachedParameterCollection, parameterCollection) ||
-            cachedParameterCollectionVersion != parameterCollection.Version ||
-            cachedBindingPlan is null ||
-            cachedParameterMetadataVersions is null ||
-            cachedParameterMetadataVersions.Length != parameterCollection.Count)
-        {
-            return false;
-        }
-
-        for (var index = 0; index < cachedParameterMetadataVersions.Length; index++)
-        {
-            if (cachedParameterMetadataVersions[index] != parameterCollection[index].BindingMetadataVersion)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    public override void Dispose()
-    {
-        foreach (var parameterType in cachedParameterTypes)
-        {
-            parameterType?.Dispose();
-        }
-
-        base.Dispose();
-    }
-
-    private readonly record struct ParameterBinding(long Index, DuckDBParameter Parameter);
 }

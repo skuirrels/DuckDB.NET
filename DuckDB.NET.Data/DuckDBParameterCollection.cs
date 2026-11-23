@@ -5,18 +5,11 @@ namespace DuckDB.NET.Data;
 public class DuckDBParameterCollection : DbParameterCollection
 {
     private readonly List<DuckDBParameter> parameters = new();
-    private int version;
-
-    internal int Version => version;
 
     public new DuckDBParameter this[int index]
     {
         get => parameters[index];
-        set
-        {
-            parameters[index] = value;
-            version++;
-        }
+        set => parameters[index] = value;
     }
 
     public new DuckDBParameter this[string parameterName]
@@ -31,43 +24,22 @@ public class DuckDBParameterCollection : DbParameterCollection
     public override int Add(object value)
     {
         parameters.Add((DuckDBParameter)value);
-        version++;
         return parameters.Count - 1;
     }
 
-    public override void Clear()
-    {
-        if (parameters.Count == 0)
-        {
-            return;
-        }
-
-        parameters.Clear();
-        version++;
-    }
+    public override void Clear() => parameters.Clear();
 
     public override bool Contains(object value) => parameters.Contains((DuckDBParameter) value);
 
     public override int IndexOf(object value) => parameters.IndexOf((DuckDBParameter) value);
 
-    public override void Insert(int index, object value)
-    {
-        parameters.Insert(index, (DuckDBParameter)value);
-        version++;
-    }
+    public override void Insert(int index, object value) => parameters.Insert(index, (DuckDBParameter) value);
 
-    public override void Remove(object value)
-    {
-        if (parameters.Remove((DuckDBParameter)value))
-        {
-            version++;
-        }
-    }
+    public override void Remove(object value) => parameters.Remove((DuckDBParameter) value);
 
     public int Add(DuckDBParameter value)
     {
         parameters.Add(value);
-        version++;
         return parameters.Count - 1;
     }
     
@@ -75,41 +47,26 @@ public class DuckDBParameterCollection : DbParameterCollection
 
     public int IndexOf(DuckDBParameter value) => parameters.IndexOf(value);
 
-    public void Insert(int index, DuckDBParameter value)
-    {
-        parameters.Insert(index, value);
-        version++;
-    }
+    public void Insert(int index, DuckDBParameter value) => parameters.Insert(index, value);
 
-    public void Remove(DuckDBParameter value)
-    {
-        if (parameters.Remove(value))
-        {
-            version++;
-        }
-    }
+    public void Remove(DuckDBParameter value) => parameters.Remove(value);
 
     
-    public override void RemoveAt(int index)
-    {
-        parameters.RemoveAt(index);
-        version++;
-    }
+    public override void RemoveAt(int index) => parameters.RemoveAt(index);
 
     public override void RemoveAt(string parameterName)
     {
         var index = IndexOfSafe(parameterName);
         parameters.RemoveAt(index);
-        version++;
     }
 
     protected override void SetParameter(int index, DbParameter value)
-        => this[index] = (DuckDBParameter)value;
+        => parameters[index] = (DuckDBParameter)value;
 
     protected override void SetParameter(string parameterName, DbParameter value)
     {
         var index = IndexOfSafe(parameterName);
-        this[index] = (DuckDBParameter)value;
+        parameters[index] = (DuckDBParameter)value;
     }
 
     public override int IndexOf(string parameterName)
@@ -128,24 +85,13 @@ public class DuckDBParameterCollection : DbParameterCollection
 
     protected override DbParameter GetParameter(int index) => parameters[index];
 
-    protected override DbParameter GetParameter(string parameterName)
-    {
-        var index = IndexOf(parameterName);
-        return parameters[index];
-    }
+    protected override DbParameter GetParameter(string parameterName) => parameters[IndexOfSafe(parameterName)];
 
     public override void AddRange(Array values)
         => AddRange(values.Cast<DuckDBParameter>());
     
     public void AddRange(IEnumerable<DuckDBParameter> values)
-    {
-        var oldCount = parameters.Count;
-        parameters.AddRange(values);
-        if (parameters.Count != oldCount)
-        {
-            version++;
-        }
-    }
+        => parameters.AddRange(values);
 
     private int IndexOfSafe(string parameterName)
     {

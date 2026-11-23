@@ -88,12 +88,13 @@ public class NanosecondTemporalTypeTests(DuckDBDatabaseFixture db) : DuckDBTestB
 
         reader.GetDataTypeName(0).Should().Be(nameof(DuckDBType.TimeNs));
         reader.GetFieldType(0).Should().Be(typeof(TimeOnly));
-        reader.GetProviderSpecificFieldType(0).Should().Be(typeof(TimeSpan));
+        // Like TIME, the provider-specific type is DuckDBTimeOnly (upstream 2.0); GetFieldValue<TimeSpan> keeps the ticks.
+        reader.GetProviderSpecificFieldType(0).Should().Be(typeof(DuckDBTimeOnly));
 
         reader.GetValue(0).Should().Be(TimeOnly.FromTimeSpan(expected));
         reader.GetFieldValue<TimeOnly>(0).Should().Be(TimeOnly.FromTimeSpan(expected));
         reader.GetFieldValue<TimeSpan>(0).Should().Be(expected);
-        reader.GetProviderSpecificValue(0).Should().Be(expected);
+        reader.GetProviderSpecificValue(0).Should().BeOfType<DuckDBTimeOnly>();
         reader.GetDateTime(0).Should().Be(new DateTime(expected.Ticks));
     }
 
@@ -110,11 +111,11 @@ public class NanosecondTemporalTypeTests(DuckDBDatabaseFixture db) : DuckDBTestB
     }
 
     [Fact]
-    public void TimeNsIsAppendedToTheMicrosecond()
+    public void TimeNsIsAppendedToTheTick()
     {
         Connection.Execute("CREATE TABLE time_ns_appender (value TIME_NS)");
 
-        // IDuckDBAppenderRow takes a TimeOnly as a DuckDBTimeOnly, which holds microseconds.
+        // The TIME_NS writer keeps a TimeOnly to the tick; a DuckDBTimeOnly holds microseconds.
         using (var appender = Connection.CreateAppender("time_ns_appender"))
         {
             appender.CreateRow().AppendValue(new TimeOnly(13, 14, 15).Add(TimeSpan.FromTicks(1234567))).EndRow();
@@ -122,7 +123,7 @@ public class NanosecondTemporalTypeTests(DuckDBDatabaseFixture db) : DuckDBTestB
         }
 
         Connection.Query<string>("SELECT value::VARCHAR FROM time_ns_appender ORDER BY rowid")
-                  .Should().Equal("13:14:15.123456", "13:14:15.123456");
+                  .Should().Equal("13:14:15.1234567", "13:14:15.123456");
     }
 
     [Fact]
@@ -134,7 +135,7 @@ public class NanosecondTemporalTypeTests(DuckDBDatabaseFixture db) : DuckDBTestB
         reader.Read();
 
         reader.GetDataTypeName(0).Should().Be(nameof(DuckDBType.Geometry));
-        reader.GetFieldType(0).Should().Be(typeof(Stream));
+        reader.GetFieldType(0).Should().Be(typeof(byte[]));
 
         using var geometry = reader.GetStream(0);
         using var wkb = reader.GetStream(1);

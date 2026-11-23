@@ -1,0 +1,144 @@
+using System.Runtime.InteropServices;
+
+namespace DuckDB.NET.Data.DataChunk.Writer;
+
+/// <summary>
+/// Shared by the LIST and ARRAY writers, which both write a collection's items into a child vector.
+/// Where the items go, and what a row records about them, is up to each subclass.
+/// </summary>
+internal abstract class CollectionVectorDataWriter : VectorDataWriterBase
+{
+    private readonly DuckDBLogicalType childType;
+
+    protected unsafe CollectionVectorDataWriter(IntPtr vector, void* vectorData, DuckDBType columnType, IntPtr childVector, DuckDBLogicalType childType)
+        : base(vector, vectorData, columnType)
+    {
+        this.childType = childType;
+        ItemWriter = VectorDataWriterFactory.CreateWriter(childVector, childType);
+    }
+
+    protected VectorDataWriterBase ItemWriter { get; }
+
+    /// <summary>
+    /// Writes the collection's items to the child vector, item i at <paramref name="start"/> + i.
+    /// </summary>
+    protected void WriteCollection(ICollection value, ulong start)
+    {
+        _ = value switch
+        {
+            IEnumerable<bool> items => WriteItems(items, start),
+            IEnumerable<bool?> items => WriteItems(items, start),
+
+            IEnumerable<sbyte> items => WriteItems(items, start),
+            IEnumerable<sbyte?> items => WriteItems(items, start),
+            IEnumerable<short> items => WriteItems(items, start),
+            IEnumerable<short?> items => WriteItems(items, start),
+            IEnumerable<int> items => WriteItems(items, start),
+            IEnumerable<int?> items => WriteItems(items, start),
+            IEnumerable<long> items => WriteItems(items, start),
+            IEnumerable<long?> items => WriteItems(items, start),
+            IEnumerable<byte> items => WriteItems(items, start),
+            IEnumerable<byte?> items => WriteItems(items, start),
+            IEnumerable<ushort> items => WriteItems(items, start),
+            IEnumerable<ushort?> items => WriteItems(items, start),
+            IEnumerable<uint> items => WriteItems(items, start),
+            IEnumerable<uint?> items => WriteItems(items, start),
+            IEnumerable<ulong> items => WriteItems(items, start),
+            IEnumerable<ulong?> items => WriteItems(items, start),
+
+            IEnumerable<float> items => WriteItems(items, start),
+            IEnumerable<float?> items => WriteItems(items, start),
+            IEnumerable<double> items => WriteItems(items, start),
+            IEnumerable<double?> items => WriteItems(items, start),
+
+            IEnumerable<decimal> items => WriteItems(items, start),
+            IEnumerable<decimal?> items => WriteItems(items, start),
+            IEnumerable<BigInteger> items => WriteItems(items, start),
+            IEnumerable<BigInteger?> items => WriteItems(items, start),
+
+            IEnumerable<string> items => WriteItems(items, start),
+            IEnumerable<Guid> items => WriteItems(items, start),
+            IEnumerable<Guid?> items => WriteItems(items, start),
+            IEnumerable<DateTime> items => WriteItems(items, start),
+            IEnumerable<DateTime?> items => WriteItems(items, start),
+            IEnumerable<TimeSpan> items => WriteItems(items, start),
+            IEnumerable<TimeSpan?> items => WriteItems(items, start),
+            IEnumerable<DuckDBDateOnly> items => WriteItems(items, start),
+            IEnumerable<DuckDBDateOnly?> items => WriteItems(items, start),
+            IEnumerable<DuckDBTimeOnly> items => WriteItems(items, start),
+            IEnumerable<DuckDBTimeOnly?> items => WriteItems(items, start),
+            IEnumerable<DateOnly> items => WriteItems(items, start),
+            IEnumerable<DateOnly?> items => WriteItems(items, start),
+            IEnumerable<TimeOnly> items => WriteItems(items, start),
+            IEnumerable<TimeOnly?> items => WriteItems(items, start),
+            IEnumerable<DateTimeOffset> items => WriteItems(items, start),
+            IEnumerable<DateTimeOffset?> items => WriteItems(items, start),
+
+            // Last of the value types, so that a list of any type above is tested against no more
+            // interfaces than before.
+            IEnumerable<Int128> items => WriteItems(items, start),
+            IEnumerable<Int128?> items => WriteItems(items, start),
+            IEnumerable<UInt128> items => WriteItems(items, start),
+            IEnumerable<UInt128?> items => WriteItems(items, start),
+
+            IEnumerable<object> items => WriteItems(items, start),
+
+            _ => WriteItemsFallback(value, start),
+        };
+    }
+
+    public override void Dispose()
+    {
+        ItemWriter.Dispose();
+        childType.Dispose();
+    }
+
+    private int WriteItems<T>(IEnumerable<T> items, ulong start)
+    {
+        // A List<T> and an array are walked as a span: no enumerator is allocated for the collection and no
+        // interface is called for an item. .NET 8 allocates the enumerator for every list. .NET 10 removes it
+        // by itself, but only while this method sees one type of collection for T. See DESIGN.md, decision 12.
+        // A read-only span, because it also takes an array of a derived type, such as a string[] that arrives
+        // as items of object.
+        if (items is List<T> list)
+        {
+            return WriteSpan(CollectionsMarshal.AsSpan(list), start);
+        }
+
+        if (items is T[] array)
+        {
+            return WriteSpan(new ReadOnlySpan<T>(array), start);
+        }
+
+        var index = 0ul;
+
+        foreach (var item in items)
+        {
+            ItemWriter.WriteValue(item, start + (index++));
+        }
+
+        return 0;
+    }
+
+    private int WriteSpan<T>(ReadOnlySpan<T> items, ulong start)
+    {
+        for (var index = 0; index < items.Length; index++)
+        {
+            ItemWriter.WriteValue(items[index], start + (ulong)index);
+        }
+
+        return 0;
+    }
+
+    private int WriteItemsFallback(IEnumerable items, ulong start)
+    {
+        var index = 0ul;
+
+        foreach (var item in items)
+        {
+            ItemWriter.WriteValue(item, start + (index++));
+        }
+
+        return 0;
+    }
+}

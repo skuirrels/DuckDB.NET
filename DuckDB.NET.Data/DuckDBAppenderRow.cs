@@ -1,32 +1,29 @@
 ﻿using DuckDB.NET.Data.DataChunk.Writer;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace DuckDB.NET.Data;
 
 public class DuckDBAppenderRow : IDuckDBAppenderRow
 {
-    private int columnIndex = 0;
     private readonly string qualifiedTableName;
     private readonly VectorDataWriterBase[] vectorWriters;
-    private ulong rowIndex;
     private readonly DuckDBDataChunk dataChunk;
     private readonly Native.DuckDBAppender nativeAppender;
 
-    internal ulong ChunkRowIndex => rowIndex;
+    internal ulong ChunkRowIndex { get; private set; }
 
-    /// <summary>
-    /// Gets whether every column of this row has been written. The column cursor only advances
-    /// after a successful write, so a row whose write threw, or that was abandoned part way, is
-    /// incomplete and its slot in the data chunk holds uninitialised data.
-    /// </summary>
-    internal bool IsComplete => columnIndex >= vectorWriters.Length;
+    internal bool IsComplete => ValueCount == vectorWriters.Length;
+
+    internal int ValueCount { get; private set; } = 0;
 
     internal DuckDBAppenderRow(string qualifiedTableName, VectorDataWriterBase[] vectorWriters,
                                ulong rowIndex, DuckDBDataChunk dataChunk, Native.DuckDBAppender nativeAppender)
     {
         this.qualifiedTableName = qualifiedTableName;
         this.vectorWriters = vectorWriters;
-        this.rowIndex = rowIndex;
+        ChunkRowIndex = rowIndex;
         this.dataChunk = dataChunk;
         this.nativeAppender = nativeAppender;
     }
@@ -39,28 +36,27 @@ public class DuckDBAppenderRow : IDuckDBAppenderRow
     /// </summary>
     internal void Reset(ulong rowIndex)
     {
-        this.rowIndex = rowIndex;
-        columnIndex = 0;
+        ChunkRowIndex = rowIndex;
+        ValueCount = 0;
     }
 
     internal void Invalidate()
     {
-        columnIndex = vectorWriters.Length;
+        ValueCount = vectorWriters.Length;
     }
 
     public void EndRow()
     {
-        if (columnIndex < vectorWriters.Length)
+        if (ValueCount < vectorWriters.Length)
         {
-            throw new InvalidOperationException($"The table {qualifiedTableName} has {vectorWriters.Length} columns but you specified only {columnIndex} values");
+            throw new InvalidOperationException($"The table {qualifiedTableName} has {vectorWriters.Length} columns but you specified only {ValueCount} values");
         }
     }
 
     public IDuckDBAppenderRow AppendNullValue()
     {
-        CheckColumnAccess();
-        vectorWriters[columnIndex].WriteNull(rowIndex);
-        columnIndex++;
+        GetCurrentWriter().WriteNull(ChunkRowIndex);
+        ValueCount++;
         return this;
     }
 
@@ -76,7 +72,20 @@ public class DuckDBAppenderRow : IDuckDBAppenderRow
 
     public IDuckDBAppenderRow AppendValue(Guid? value) => AppendValueInternalStruct(value);
 
+    // The priority of BigInteger? and UInt128? is lowered so that an int or long constant, AppendValue(1), binds to
+    // the overload it bound to before UInt128? was added (sbyte? for 1), and is not ambiguous. A constant converts to
+    // UInt128 through byte, ushort, uint or ulong, and C# has no rule that prefers sbyte, short, int or long to
+    // UInt128. Both are lowered so that a UInt128 argument still binds to UInt128? and not to BigInteger?, to which
+    // it converts as well. C# 12 ignores the attribute: there such a constant is ambiguous and needs its type.
+    [OverloadResolutionPriority(-1)]
     public IDuckDBAppenderRow AppendValue(BigInteger? value) => AppendValueInternalStruct(value);
+
+    // The exact types of HUGEINT and UHUGEINT. Like the other integers, the bytes are stored without a check, so either
+    // goes into the other column too, reinterpreted.
+    public IDuckDBAppenderRow AppendValue(Int128? value) => AppendValueInternalStruct(value);
+
+    [OverloadResolutionPriority(-1)]
+    public IDuckDBAppenderRow AppendValue(UInt128? value) => AppendValueInternalStruct(value);
 
     #region Append Signed Int
 
@@ -104,20 +113,29 @@ public class DuckDBAppenderRow : IDuckDBAppenderRow
 
     #region Append Enum
 
+    [SuppressMessage("Reliability", "S2583", Justification = "TEnum can be System.Enum itself, a class, and then the value can be null.")]
     public IDuckDBAppenderRow AppendValue<TEnum>(TEnum? value) where TEnum : Enum
     {
-        CheckColumnAccess();
+        var writer = GetCurrentWriter();
 
-        if (value != null)
+        if (value == null)
         {
-            vectorWriters[columnIndex].WriteValue(value, rowIndex);
+            writer.WriteNull(ChunkRowIndex);
+        }
+        // An enum type, and not System.Enum itself: its number is read as the integer the enum is stored as. Through
+        // WriteValue it would be boxed to be tested against Enum.
+        else if (typeof(TEnum).IsValueType)
+        {
+            TEnum number = value;
+            writer.AppendEnum(EnumValue<TEnum>.ToUInt64(ref number), ChunkRowIndex);
+            writer.MarkValid(ChunkRowIndex);
         }
         else
         {
-            vectorWriters[columnIndex].WriteNull(rowIndex);
+            writer.WriteValue(value, ChunkRowIndex);
         }
 
-        columnIndex++;
+        ValueCount++;
         return this;
     }
 
@@ -132,6 +150,9 @@ public class DuckDBAppenderRow : IDuckDBAppenderRow
     #endregion
 
     #region Append Temporal
+
+    // DateOnly converts implicitly to DuckDBDateOnly and only explicitly back, so a DateOnly argument binds to the
+    // DateOnly? overload and a DuckDBDateOnly argument to the DuckDBDateOnly? one. The same holds for TimeOnly.
     public IDuckDBAppenderRow AppendValue(DateOnly? value) => AppendValueInternalStruct(value);
 
     public IDuckDBAppenderRow AppendValue(TimeOnly? value) => AppendValueInternalStruct(value);
@@ -164,74 +185,92 @@ public class DuckDBAppenderRow : IDuckDBAppenderRow
     [OverloadResolutionPriority(-1)]
     public IDuckDBAppenderRow AppendValue(IDictionary? value) => AppendValueInternalClass(value);
 
+    // Writes any dictionary (generic or not) to a MAP column; used by the mapped appender.
+    internal DuckDBAppenderRow AppendMapValue(IEnumerable? value) => AppendValueInternalClass(value);
+
     #endregion
 
     public IDuckDBAppenderRow AppendDefault()
     {
-        CheckColumnAccess();
+        GetCurrentWriter();
 
-        var state = NativeMethods.Appender.DuckDBAppendDefaultToChunk(nativeAppender, dataChunk, columnIndex, rowIndex);
+        var state = NativeMethods.Appender.DuckDBAppendDefaultToChunk(nativeAppender, dataChunk, (ulong)ValueCount, ChunkRowIndex);
 
         if (state == DuckDBState.Error)
         {
             NativeMethods.Appender.DuckDBAppenderErrorData(nativeAppender).ThrowOnError();
         }
 
-        columnIndex++;
+        ValueCount++;
         return this;
     }
 
     private DuckDBAppenderRow AppendValueInternalStruct<T>(T? value) where T : struct
     {
-        CheckColumnAccess();
+        var writer = GetCurrentWriter();
 
         if (value.HasValue)
         {
-            vectorWriters[columnIndex].WriteValue(value.Value, rowIndex);
+            writer.WriteValue(value.Value, ChunkRowIndex);
         }
         else
         {
-            vectorWriters[columnIndex].WriteNull(rowIndex);
+            writer.WriteNull(ChunkRowIndex);
         }
 
-        columnIndex++;
+        ValueCount++;
         return this;
     }
 
     private DuckDBAppenderRow AppendValueInternalClass<T>(T? value) where T : class
     {
-        CheckColumnAccess();
+        GetCurrentWriter().WriteValue(value, ChunkRowIndex);
 
-        vectorWriters[columnIndex].WriteValue(value, rowIndex);
-
-        columnIndex++;
+        ValueCount++;
         return this;
     }
 
     private unsafe IDuckDBAppenderRow AppendSpan(Span<byte> val)
     {
-        if (val == null)
+        // A null byte[] or a default span has no memory at all and writes NULL. An empty array still has memory and is
+        // an empty BLOB, so IsEmpty would be wrong here.
+        if (Unsafe.IsNullRef(ref MemoryMarshal.GetReference(val)))
         {
             return AppendNullValue();
         }
 
-        CheckColumnAccess();
+        var writer = GetCurrentWriter();
 
         fixed (byte* pSource = val)
         {
-            vectorWriters[columnIndex].AppendBlob(pSource, val.Length, rowIndex);
+            writer.AppendBlob(pSource, val.Length, ChunkRowIndex);
         }
 
-        columnIndex++;
+        ValueCount++;
         return this;
     }
 
-    private void CheckColumnAccess()
+    // Returns the writer of the column the next value goes to, or throws when the row already has a value for
+    // every column. The unsigned comparison on locals lets the JIT drop its own bounds check on the array, and
+    // the throw lives in a separate method so that this one is small enough to be inlined.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private VectorDataWriterBase GetCurrentWriter()
     {
-        if (columnIndex >= vectorWriters.Length)
+        var writers = vectorWriters;
+        var index = ValueCount;
+
+        if ((uint)index >= (uint)writers.Length)
         {
-            throw new IndexOutOfRangeException($"The table {qualifiedTableName} has {vectorWriters.Length} columns but you are trying to append value for column {columnIndex + 1}");
+            ThrowColumnOutOfRange();
         }
+
+        return writers[index];
+    }
+
+    [DoesNotReturn]
+    private void ThrowColumnOutOfRange()
+    {
+        throw new IndexOutOfRangeException($"The table {qualifiedTableName} has {vectorWriters.Length} columns but you are trying to append value for column {ValueCount + 1}");
     }
 }
 
@@ -245,7 +284,12 @@ public interface IDuckDBAppenderRow
     IDuckDBAppenderRow AppendValue(string? value);
     IDuckDBAppenderRow AppendValue(decimal? value);
     IDuckDBAppenderRow AppendValue(Guid? value);
+    // Lowered for the reason given on DuckDBAppenderRow.AppendValue(BigInteger?).
+    [OverloadResolutionPriority(-1)]
     IDuckDBAppenderRow AppendValue(BigInteger? value);
+    IDuckDBAppenderRow AppendValue(Int128? value);
+    [OverloadResolutionPriority(-1)]
+    IDuckDBAppenderRow AppendValue(UInt128? value);
     IDuckDBAppenderRow AppendValue(sbyte? value);
     IDuckDBAppenderRow AppendValue(short? value);
     IDuckDBAppenderRow AppendValue(int? value);
@@ -257,6 +301,8 @@ public interface IDuckDBAppenderRow
     IDuckDBAppenderRow AppendValue<TEnum>(TEnum? value) where TEnum : Enum;
     IDuckDBAppenderRow AppendValue(float? value);
     IDuckDBAppenderRow AppendValue(double? value);
+    IDuckDBAppenderRow AppendValue(DateOnly? value);
+    IDuckDBAppenderRow AppendValue(TimeOnly? value);
     IDuckDBAppenderRow AppendValue(DuckDBDateOnly? value);
     IDuckDBAppenderRow AppendValue(DuckDBTimeOnly? value);
     IDuckDBAppenderRow AppendValue(DateTime? value);

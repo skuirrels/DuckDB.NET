@@ -6,6 +6,8 @@ internal sealed class GuidVectorDataReader : VectorDataReaderBase
     {
     }
 
+    internal override Guid ReadGuid(ulong offset) => GetValidValue<Guid>(offset);
+
     protected override T GetValidValue<T>(ulong offset)
     {
         if (DuckDBType != DuckDBType.Uuid)
@@ -19,11 +21,11 @@ internal sealed class GuidVectorDataReader : VectorDataReaderBase
         return (T)(object)guid;
     }
 
-    internal override object GetValue(ulong offset, Type targetType)
+    internal override object GetValueCore(ulong offset, Type targetType)
     {
         if (DuckDBType != DuckDBType.Uuid)
         {
-            return base.GetValue(offset, targetType);
+            return base.GetValueCore(offset, targetType);
         }
 
         var hugeInt = GetFieldData<DuckDBHugeInt>(offset);

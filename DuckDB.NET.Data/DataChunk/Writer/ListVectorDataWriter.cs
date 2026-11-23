@@ -1,243 +1,69 @@
-﻿using System.Reflection;
-using System.Runtime.CompilerServices;
+﻿using DuckDB.NET.Data.Common;
 
 namespace DuckDB.NET.Data.DataChunk.Writer;
 
-internal sealed unsafe class ListVectorDataWriter : ListEntryVectorDataWriter
+// No InitializeWriter override, unlike ArrayVectorDataWriter: when a list around this one grows, DuckDB
+// moves this list's entries but not its items (Vector::FindResizeInfos stops at list buffers), and
+// ResizeVector refreshes ItemWriter itself when this list's own items move.
+internal sealed class ListVectorDataWriter : CollectionVectorDataWriter
 {
-    private delegate void CollectionWriter(ListVectorDataWriter writer, ICollection collection, ulong startIndex);
+    private ulong offset = 0;
+    private ulong vectorReservedSize = DuckDBGlobalData.VectorSize;
 
-    private static readonly ConditionalWeakTable<Type, CollectionWriterPlan> CollectionWriterCache = new();
-    private static readonly MethodInfo WriteArrayMethod =
-        typeof(ListVectorDataWriter).GetMethod(nameof(WriteArray), BindingFlags.Static | BindingFlags.NonPublic)!;
-    private static readonly MethodInfo WriteListMethod =
-        typeof(ListVectorDataWriter).GetMethod(nameof(WriteList), BindingFlags.Static | BindingFlags.NonPublic)!;
-    private static readonly MethodInfo WriteIListMethod =
-        typeof(ListVectorDataWriter).GetMethod(nameof(WriteIList), BindingFlags.Static | BindingFlags.NonPublic)!;
-    private static readonly MethodInfo WriteReadOnlyListMethod =
-        typeof(ListVectorDataWriter).GetMethod(nameof(WriteReadOnlyList), BindingFlags.Static | BindingFlags.NonPublic)!;
-    private static readonly MethodInfo WriteEnumerableMethod =
-        typeof(ListVectorDataWriter).GetMethod(nameof(WriteEnumerable), BindingFlags.Static | BindingFlags.NonPublic)!;
-
-    private readonly ulong arraySize;
-    private readonly DuckDBLogicalType childType;
-    private readonly VectorDataWriterBase listItemWriter;
-    private Type? cachedCollectionType;
-    private CollectionWriterPlan? cachedCollectionWriterPlan;
-
-    private bool IsList => ColumnType == DuckDBType.List;
-
-    public ListVectorDataWriter(IntPtr vector, void* vectorData, DuckDBType columnType, DuckDBLogicalType logicalType) : base(vector, vectorData, columnType)
+    public unsafe ListVectorDataWriter(IntPtr vector, void* vectorData, DuckDBType columnType, DuckDBLogicalType logicalType)
+        : base(vector, vectorData, columnType, NativeMethods.Vectors.DuckDBListVectorGetChild(vector), NativeMethods.LogicalType.DuckDBListTypeChildType(logicalType))
     {
-        childType = IsList ? NativeMethods.LogicalType.DuckDBListTypeChildType(logicalType) : NativeMethods.LogicalType.DuckDBArrayTypeChildType(logicalType);
-        var childVector = IsList ? NativeMethods.Vectors.DuckDBListVectorGetChild(vector) : NativeMethods.Vectors.DuckDBArrayVectorGetChild(vector);
-
-        arraySize = IsList ? 0 : (ulong)NativeMethods.LogicalType.DuckDBArrayVectorGetSize(logicalType);
-        listItemWriter = VectorDataWriterFactory.CreateWriter(childVector, childType);
     }
 
     internal override bool AppendCollection(ICollection value, ulong rowIndex)
     {
         var count = (ulong)value.Count;
 
-        //If writing to a list column we need to make sure that enough space is allocated. Not needed for Arrays as DuckDB does it for us.
-        if (IsList)
-        {
-            EnsureChildCapacity(rowIndex, count);
-        }
+        ResizeVector(rowIndex % DuckDBGlobalData.VectorSize, count);
 
-        ValidateArraySize(count);
+        // Each list entry records where its items start, so the items can go at the running offset.
+        var start = offset;
 
-        var collectionWriter = GetCollectionWriter(value.GetType());
-        if (collectionWriter is not null)
-        {
-            collectionWriter(this, value, ChildOffset);
-        }
-        else
-        {
-            WriteItemsFallback(value);
-        }
+        WriteCollection(value, start);
 
-        if (IsList)
-        {
-            return CompleteListEntry(count, rowIndex);
-        }
+        var result = AppendValueInternal(new DuckDBListEntry(start, count), rowIndex);
 
-        AdvanceChildOffset(count);
-        return true;
+        offset += count;
+        NativeMethods.Vectors.DuckDBListVectorSetSize(Vector, offset);
+
+        return result;
     }
 
-    private CollectionWriter? GetCollectionWriter(Type collectionType)
+    private void ResizeVector(ulong rowIndex, ulong count)
     {
-        if (collectionType == cachedCollectionType)
+        //Make sure that enough space is allocated for the list's items. Arrays don't need this, as DuckDB sizes their items for us.
+        if (offset + count <= vectorReservedSize) return;
+
+        var factor = 2d;
+
+        if (rowIndex > DuckDBGlobalData.VectorSize * 0.25 && rowIndex < DuckDBGlobalData.VectorSize * 0.5)
         {
-            return cachedCollectionWriterPlan!.Writer;
+            factor = 1.75;
         }
 
-        cachedCollectionType = collectionType;
-        cachedCollectionWriterPlan = CollectionWriterCache.GetValue(collectionType, CreateCollectionWriter);
-        return cachedCollectionWriterPlan.Writer;
-    }
-
-    private void ValidateArraySize(ulong count)
-    {
-        if (!IsList && count != arraySize)
+        if (rowIndex > DuckDBGlobalData.VectorSize * 0.5 && rowIndex < DuckDBGlobalData.VectorSize * 0.75)
         {
-            throw new InvalidOperationException(
-                $"Column has Array size of {arraySize} but the specified value has size of {count}");
-        }
-    }
-
-    private void WriteItemsFallback(IEnumerable items)
-    {
-        var index = 0ul;
-
-        foreach (var item in items)
-        {
-            listItemWriter.WriteValue(item, ChildOffset + (index++));
-        }
-    }
-
-    private static CollectionWriterPlan CreateCollectionWriter(Type collectionType)
-    {
-        MethodInfo? openMethod = null;
-        Type? elementType = null;
-
-        if (collectionType.IsSZArray)
-        {
-            openMethod = WriteArrayMethod;
-            elementType = collectionType.GetElementType();
-        }
-        else if (collectionType.IsGenericType &&
-                 collectionType.GetGenericTypeDefinition() == typeof(List<>))
-        {
-            openMethod = WriteListMethod;
-            elementType = collectionType.GetGenericArguments()[0];
-        }
-        else
-        {
-            elementType = GetUniqueGenericElementType(collectionType, typeof(IEnumerable<>));
-            if (elementType is not null)
-            {
-                if (typeof(IList<>).MakeGenericType(elementType).IsAssignableFrom(collectionType))
-                {
-                    openMethod = WriteIListMethod;
-                }
-                else if (typeof(IReadOnlyList<>).MakeGenericType(elementType).IsAssignableFrom(collectionType))
-                {
-                    openMethod = WriteReadOnlyListMethod;
-                }
-                else
-                {
-                    openMethod = WriteEnumerableMethod;
-                }
-            }
+            factor = 1.5;
         }
 
-        return new CollectionWriterPlan(
-            openMethod is null || elementType is null
-                ? null
-                : openMethod.MakeGenericMethod(elementType).CreateDelegate<CollectionWriter>());
-    }
-
-    private static Type? GetUniqueGenericElementType(Type collectionType, Type genericInterfaceType)
-    {
-        Type? elementType = null;
-
-        foreach (var interfaceType in collectionType.GetInterfaces())
+        if (rowIndex > DuckDBGlobalData.VectorSize * 0.75)
         {
-            if (!interfaceType.IsGenericType ||
-                interfaceType.GetGenericTypeDefinition() != genericInterfaceType)
-            {
-                continue;
-            }
-
-            var candidateType = interfaceType.GetGenericArguments()[0];
-            if (elementType is not null && elementType != candidateType)
-            {
-                return null;
-            }
-
-            elementType = candidateType;
+            factor = 1.25;
         }
 
-        return elementType;
-    }
+        vectorReservedSize = (ulong)Math.Max(vectorReservedSize * factor, offset + count);
+        var state = NativeMethods.Vectors.DuckDBListVectorReserve(Vector, vectorReservedSize);
 
-    private static void WriteArray<T>(
-        ListVectorDataWriter writer,
-        ICollection collection,
-        ulong startIndex)
-    {
-        var values = (T[])collection;
-
-        for (var index = 0; index < values.Length; index++)
+        if (!state.IsSuccess())
         {
-            writer.listItemWriter.WriteValue(values[index], startIndex + (ulong)index);
+            throw new DuckDBException($"Failed to reserve {vectorReservedSize} for the list vector");
         }
-    }
 
-    private static void WriteList<T>(
-        ListVectorDataWriter writer,
-        ICollection collection,
-        ulong startIndex)
-    {
-        var values = (List<T>)collection;
-
-        for (var index = 0; index < values.Count; index++)
-        {
-            writer.listItemWriter.WriteValue(values[index], startIndex + (ulong)index);
-        }
-    }
-
-    private static void WriteIList<T>(
-        ListVectorDataWriter writer,
-        ICollection collection,
-        ulong startIndex)
-    {
-        var values = (IList<T>)collection;
-
-        for (var index = 0; index < values.Count; index++)
-        {
-            writer.listItemWriter.WriteValue(values[index], startIndex + (ulong)index);
-        }
-    }
-
-    private static void WriteReadOnlyList<T>(
-        ListVectorDataWriter writer,
-        ICollection collection,
-        ulong startIndex)
-    {
-        var values = (IReadOnlyList<T>)collection;
-
-        for (var index = 0; index < values.Count; index++)
-        {
-            writer.listItemWriter.WriteValue(values[index], startIndex + (ulong)index);
-        }
-    }
-
-    private static void WriteEnumerable<T>(
-        ListVectorDataWriter writer,
-        ICollection collection,
-        ulong startIndex)
-    {
-        var index = 0ul;
-
-        foreach (var value in (IEnumerable<T>)collection)
-        {
-            writer.listItemWriter.WriteValue(value, startIndex + index++);
-        }
-    }
-
-    private sealed record CollectionWriterPlan(CollectionWriter? Writer);
-
-    protected override void OnChildVectorReserved() => listItemWriter.InitializeWriter();
-
-    public override void Dispose()
-    {
-        cachedCollectionType = null;
-        cachedCollectionWriterPlan = null;
-        listItemWriter.Dispose();
-        childType.Dispose();
+        ItemWriter.InitializeWriter();
     }
 }
